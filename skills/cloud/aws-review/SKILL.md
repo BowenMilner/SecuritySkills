@@ -13,7 +13,7 @@ phase: [assess, operate]
 frameworks: [CIS-AWS-v3.0.0]
 difficulty: intermediate
 time_estimate: "60-90min"
-version: "1.0.0"
+version: "1.0.1"
 author: unitoneai
 license: MIT
 allowed-tools: Read, Grep, Glob
@@ -97,6 +97,23 @@ Evaluate all AWS configurations against CIS AWS v3.0.0 Sections 1 through 5, cov
 
 For detailed CIS benchmark checklist items with specific Terraform patterns, grep patterns, and configuration examples for all five sections, see [benchmark-checklist.md](benchmark-checklist.md) in this skill directory.
 
+When evaluating CIS Section 3 logging controls, preserve linked evidence across the CloudTrail logging chain. A CloudTrail resource should not be assessed in isolation when related controls depend on the trail's S3 bucket, bucket public-access controls, bucket policy, KMS key and key policy, CloudWatch Logs group/role, S3 access logging target, and S3 object data-event selectors.
+
+**CloudTrail linked evidence chain:**
+
+| Chain Element | Evidence to Cross-Reference |
+|---|---|
+| Trail scope | `enable_logging`, `is_multi_region_trail`, organization trail status, home region, included/excluded regions. |
+| Log validation | `enable_log_file_validation = true` on every in-scope trail. |
+| Log bucket | Trail `s3_bucket_name` resolves to a bucket resource/export and bucket ARN. |
+| Bucket public access | Account-level and bucket-level public access blocks, ACLs, and bucket policy statements for the log prefix. |
+| KMS encryption | Trail `kms_key_id`, linked KMS key, key rotation where applicable, and key policy allowing CloudTrail without public or broad principals. |
+| CloudWatch integration | `cloud_watch_logs_group_arn`, `cloud_watch_logs_role_arn`, log group retention, and metric filters referencing the same log group. |
+| S3 access logging | CloudTrail log bucket access logging target and write permissions. |
+| Object data events | S3 object read/write event selectors, management events, and data-resource scope when CIS object-level logging applies. |
+
+If one element is missing from the artifacts, mark dependent controls **Not Evaluable** or **Fail** based on the control, rather than treating a multi-region trail alone as complete evidence.
+
 ---
 
 ### Step 7: Compile Assessment Report
@@ -156,6 +173,7 @@ Produce the final report using the structure defined in the Output Format sectio
 - **Line(s):** <line numbers if applicable>
 - **Description:** <what was found>
 - **Evidence:** <specific configuration or code snippet>
+- **Linked Evidence:** <related trail, bucket, bucket policy, public access block, KMS key, CloudWatch log group/role, selector, or metric-filter resources reviewed>
 - **Remediation:** <specific fix with code example>
 
 ### Prioritized Remediation Plan
@@ -200,6 +218,7 @@ Produce the final report using the structure defined in the Output Format sectio
 4. **Assuming default security groups are empty.** AWS default security groups allow all inbound traffic from the same security group and all outbound traffic. CIS 5.4 requires explicitly managing them to have zero rules.
 5. **Overlooking IMDSv2 in launch templates.** CIS 5.6 applies to both `aws_instance` and `aws_launch_template` resources. Checking only direct instance definitions misses auto-scaled instances.
 6. **Counting not-evaluable controls as passing.** If a control cannot be verified from the available IaC (e.g., contact details in CIS 1.1), mark it "Not Evaluable" rather than "Pass."
+7. **Passing CloudTrail controls from the trail resource alone.** CIS 3.x logging evidence spans the trail, S3 log bucket, public access controls, KMS key/policy, CloudWatch log group/role, access logging target, and event selectors. Preserve those linked resources in the finding so missing or public log storage is not hidden by an otherwise valid trail.
 
 ---
 
@@ -223,6 +242,10 @@ Produce the final report using the structure defined in the Output Format sectio
 - AWS Security Best Practices: https://docs.aws.amazon.com/security/
 - AWS IAM Best Practices: https://docs.aws.amazon.com/IAM/latest/UserGuide/best-practices.html
 - AWS CloudTrail Documentation: https://docs.aws.amazon.com/awscloudtrail/latest/userguide/
+- AWS CloudTrail log file integrity validation: https://docs.aws.amazon.com/awscloudtrail/latest/userguide/cloudtrail-log-file-validation-intro.html
+- AWS CloudTrail SSE-KMS key policy requirements: https://docs.aws.amazon.com/awscloudtrail/latest/userguide/create-kms-key-policy-for-cloudtrail.html
+- AWS CloudTrail sending events to CloudWatch Logs: https://docs.aws.amazon.com/awscloudtrail/latest/userguide/send-cloudtrail-events-to-cloudwatch-logs.html
+- AWS CloudTrail S3 bucket policy examples: https://docs.aws.amazon.com/awscloudtrail/latest/userguide/create-s3-bucket-policy-for-cloudtrail.html
 - AWS Security Hub: https://docs.aws.amazon.com/securityhub/latest/userguide/
 - AWS VPC Security: https://docs.aws.amazon.com/vpc/latest/userguide/security.html
 - Terraform AWS Provider Documentation: https://registry.terraform.io/providers/hashicorp/aws/latest/docs
@@ -231,4 +254,5 @@ Produce the final report using the structure defined in the Output Format sectio
 
 ## Changelog
 
+- **1.0.1** -- Added CloudTrail linked-evidence chain requirements for CIS Section 3 logging controls and detailed findings.
 - **1.0.0** -- Initial release. Full coverage of CIS Amazon Web Services Foundations Benchmark v3.0.0 sections 1 through 5 (62 recommendations).

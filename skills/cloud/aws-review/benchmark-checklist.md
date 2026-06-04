@@ -266,6 +266,14 @@ encrypted = true
 
 Evaluate logging configurations against Section 3 recommendations.
 
+Before marking CIS 3.x controls as Pass, build a linked evidence chain for each in-scope trail:
+
+| Trail | Bucket | Public Access Evidence | Bucket Policy Evidence | KMS Key / Policy | CloudWatch Log Group / Role | S3 Access Logging | Data Event Selectors |
+|---|---|---|---|---|---|---|---|
+| `aws_cloudtrail.main` | `aws_s3_bucket.cloudtrail` | account + bucket block | CloudTrail write-only, no public read | key ARN + policy | log group + role ARN | target bucket | S3 read/write selectors |
+
+Do not treat `enable_logging = true` and `is_multi_region_trail = true` as sufficient linked evidence for the whole logging section. Preserve unresolved references and mark dependent controls **Not Evaluable** when the related bucket, key, log group, selector, or policy artifacts are missing.
+
 ### CIS 3.1 -- Ensure CloudTrail is enabled in all regions
 
 **Grep patterns:**
@@ -281,13 +289,30 @@ resource "aws_cloudtrail" {
 
 Check `enable_log_file_validation = true` on CloudTrail trails.
 
+Record the trail resource name and whether validation is enabled on every organization/member-account trail in scope. If multiple trails exist, do not let one validated trail mask another trail with validation disabled.
+
 ### CIS 3.3 -- Ensure the S3 bucket used to store CloudTrail logs is not publicly accessible
 
 Cross-reference the CloudTrail S3 bucket with public access block configuration.
 
+Required linked evidence:
+
+- Resolve each trail's `s3_bucket_name` to the bucket resource, bucket ARN, or imported bucket identifier.
+- Check bucket-level `aws_s3_bucket_public_access_block` and any account-level public access block evidence when available.
+- Review `aws_s3_bucket_policy`, ACLs, and log-prefix statements for broad principals such as `"*"`, cross-account grants, or public `s3:GetObject`.
+- Confirm the bucket policy permits CloudTrail delivery without granting public read/list access to `AWSLogs/<account-id>/*`.
+- Mark **Fail** if the resolved log bucket or prefix is publicly readable. Mark **Not Evaluable** if the trail bucket cannot be resolved from available artifacts.
+
 ### CIS 3.4 -- Ensure CloudTrail trails are integrated with CloudWatch Logs
 
 Check for `cloud_watch_logs_group_arn` on CloudTrail resources.
+
+Required linked evidence:
+
+- Trail `cloud_watch_logs_group_arn` resolves to the reviewed CloudWatch log group.
+- Trail `cloud_watch_logs_role_arn` resolves to an IAM role that allows CloudTrail to publish to that log group.
+- CIS 4.x metric filters and alarms point to the same log group or an explicitly documented equivalent source.
+- Mark **Not Evaluable** when metric filters exist but the referenced log group cannot be tied back to the CloudTrail trail.
 
 ### CIS 3.5 -- Ensure AWS Config is enabled in all regions
 
@@ -311,9 +336,18 @@ resource "aws_s3_bucket_logging" {
 }
 ```
 
+Confirm the `bucket` value is the same bucket resolved from the CloudTrail `s3_bucket_name`. If only unrelated S3 buckets have access logging, do not count this control as passing for the CloudTrail log bucket.
+
 ### CIS 3.7 -- Ensure CloudTrail logs are encrypted at rest using KMS CMKs
 
 Check for `kms_key_id` on CloudTrail resources.
+
+Required linked evidence:
+
+- Trail `kms_key_id` resolves to a KMS key or alias in the artifacts.
+- Key policy allows CloudTrail encryption/decryption for log delivery without broad public or wildcard principals.
+- Customer-managed symmetric key rotation is reviewed under CIS 3.8 when applicable.
+- Mark **Not Evaluable** if `kms_key_id` is present but the key policy cannot be reviewed and the assessment scope requires key-policy evidence.
 
 ### CIS 3.8 -- Ensure rotation for customer-created symmetric CMKs is enabled
 
@@ -348,9 +382,13 @@ event_selector {
 }
 ```
 
+Cross-reference data-event selectors with the same in-scope trails used for CIS 3.1-3.7. Management-event logging alone does not prove S3 object write data events are enabled.
+
 ### CIS 3.11 -- Ensure that Object-level logging for read events is enabled for S3 buckets
 
 Same as 3.10 -- verify both read and write events are captured.
+
+Record whether read and write selectors cover all required buckets, all in-scope regions/accounts, or only a subset. Use **Not Evaluable** for unresolved data-resource scope rather than assuming full object-level coverage.
 
 ---
 
