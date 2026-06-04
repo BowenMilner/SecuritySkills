@@ -13,7 +13,7 @@ phase: [operate]
 frameworks: [MITRE-ATT&CK-v16, Sigma, Palantir-ADS]
 difficulty: advanced
 time_estimate: "30-60min"
-version: "1.0.0"
+version: "1.0.1"
 author: unitoneai
 license: MIT
 allowed-tools: Read, Grep, Glob
@@ -111,6 +111,20 @@ Before writing the rule, enumerate:
 
 Write the detection rule following the Sigma specification (sigmahq.io).
 
+Before choosing a rule format, decide whether the detection is a single-event rule or a multi-event correlation. Do not hide threshold, distinct-count, sequence, or ordered-temporal intent inside a plain Sigma `condition`.
+
+**Correlation decision gate:**
+
+| Question | If yes |
+|----------|--------|
+| Does the strategy require count, distinct count, burst, sum, average, percentile, or rare-by-volume behavior? | Use a Sigma correlation rule such as `event_count`, `value_count`, `value_sum`, `value_avg`, or `value_percentile`, or document a SIEM-native handoff. |
+| Does the strategy require events before or after other events? | Use `temporal` or `temporal_ordered`; do not model this as `selection_a and selection_b` in one plain rule. |
+| Does the strategy combine multiple rules or log sources? | Add alias mapping for user, host, IP, process, session, and other join fields before claiming the entities match. |
+| Does the target backend lack the required correlation feature? | Mark the output as partial and include backend-specific implementation notes rather than presenting portable Sigma as complete. |
+| Is the detection truly one event with independent selectors and filters? | Use a standard Sigma rule and state why correlation is not required. |
+
+**Correlation intent triggers:** Treat phrases such as "multiple", "burst", "threshold", "count", "distinct", "rare across hosts", "same user", "same source", "followed by", "before", "after", or "within N minutes" as a required correlation decision.
+
 **Sigma Rule Structure:**
 
 ```yaml
@@ -161,6 +175,40 @@ fields:
     - ParentCommandLine
     - User
     - Computer
+```
+
+**Sigma Correlation Rule Structure:**
+
+Use this form when the detection requires count, grouping, or ordered relationship semantics that cannot be represented by one event rule.
+
+```yaml
+title: Failed Logons Followed by Success
+id: 3db0d3c3-2dd1-4a64-95c5-9edb8f78b8d5
+status: experimental
+description: |
+    Correlates repeated failed logons followed by a successful logon for the
+    same account and source workstation within a 10 minute window.
+correlation:
+    type: temporal_ordered
+    rules:
+        - failed_logon_rule_id
+        - successful_logon_rule_id
+    group-by:
+        - TargetUserName
+        - WorkstationName
+    timespan: 10m
+    condition:
+        gte: 1
+aliases:
+    TargetUserName:
+        - user.name
+        - AccountName
+    WorkstationName:
+        - host.name
+        - Computer
+falsepositives:
+    - Password reset or helpdesk-assisted login recovery
+level: medium
 ```
 
 **Sigma rule field requirements:**
@@ -258,6 +306,29 @@ Describe how to test that this detection works correctly.
 2. **True negative test:** Execute `powershell.exe -Command "Get-Process"` (no encoding). Verify no alert fires.
 3. **Filter validation:** If SCCM is in use, verify that SCCM client operations do not trigger the alert.
 4. **ATT&CK technique coverage:** Validate with atomic red team test `T1059.001` (https://github.com/redcanaryco/atomic-red-team/blob/master/atomics/T1059.001/T1059.001.md).
+
+For correlation rules, include sequence and grouping fixtures that prove the rule preserves time, order, entity identity, and backend behavior:
+
+- Matching sequence inside the configured timespan.
+- Same events outside the timespan.
+- Events in reverse order for `temporal_ordered` rules.
+- Same user on a different host when host is part of `group-by`.
+- Different user on the same host when user is part of `group-by`.
+- Backend conversion output, or an explicit partial-support note when the backend cannot represent the required correlation.
+
+#### Backend Correlation Support
+
+Record backend support before recommending correlation content as deployable.
+
+| Backend | Count | Distinct count | Temporal | Ordered temporal | Multi-source aliases | Status |
+|---------|:-----:|:--------------:|:--------:|:----------------:|:--------------------:|--------|
+| Splunk | yes | yes | yes | query-dependent | yes | Pass/Partial |
+| Microsoft Sentinel | yes | yes | yes | yes | yes | Pass/Partial |
+| Elastic | yes | yes | yes | rule-dependent | yes | Pass/Partial |
+| Chronicle | yes | query-dependent | yes | query-dependent | query-dependent | Pass/Partial |
+| QRadar | yes | query-dependent | query-dependent | partial | query-dependent | Pass/Partial |
+
+If a backend cannot preserve the required `group-by`, `timespan`, ordering, alias mapping, or chained-correlation semantics, classify the portable Sigma artifact as **partial** and provide SIEM-native implementation notes.
 
 #### Response
 Define the analyst response procedure when this alert fires.
@@ -379,6 +450,21 @@ Produce detection engineering deliverables in this structure:
 ### Sigma Rule
 [Full Sigma YAML rule]
 
+### Correlation Decision
+| Field | Value |
+|-------|-------|
+| Rule Type | [Single-event Sigma / Sigma correlation / SIEM-native handoff] |
+| Correlation Trigger | [threshold / distinct count / temporal / temporal_ordered / multi-source / none] |
+| group-by Fields | [user, host, source IP, session, or N/A] |
+| Timespan | [e.g., 10m or N/A] |
+| Alias Mapping Required | [Yes/No; fields mapped] |
+| Backend Support | [Pass / Partial / Not supported] |
+
+### Backend Support Matrix
+| Backend | Count | Distinct Count | Temporal | Ordered Temporal | Multi-source Aliases | Status | Notes |
+|---------|-------|----------------|----------|------------------|----------------------|--------|-------|
+| [Splunk] | [yes/no] | [yes/no] | [yes/no] | [yes/partial/no] | [yes/no] | [Pass/Partial] | [Conversion notes] |
+
 ### ADS Documentation
 [Complete ADS framework documentation per Step 4]
 
@@ -392,6 +478,7 @@ Produce detection engineering deliverables in this structure:
 ### Deployment Notes
 - **Target SIEM:** [Platform]
 - **Converted Query:** [KQL/SPL/EQL equivalent if requested]
+- **Correlation Status:** [Complete portable Sigma / Base rule plus SIEM-native handoff / Partial due to backend limitation]
 - **Estimated False Positive Rate:** [Low / Medium / High]
 - **Tuning Recommendations:** [Specific filter additions]
 ```
@@ -494,6 +581,14 @@ Detection rules are not write-once artifacts. Log sources change, environments e
 
 Overly broad or incorrect ATT&CK mappings undermine coverage analysis. A rule that detects a specific PowerShell obfuscation technique should map to T1059.001 (PowerShell) and potentially T1027 (Obfuscated Files or Information), not to the parent T1059 alone. Use sub-technique IDs when the detection is specific to a sub-technique. Validate mappings against the ATT&CK technique definition and procedure examples.
 
+### Pitfall 6: Encoding Correlation Intent as a Plain Rule
+
+A condition such as `failed and success` in a single Sigma event rule does not prove "five failures followed by one success for the same user and host within 10 minutes." Use Sigma correlation or a clearly documented SIEM-native handoff whenever the behavior depends on threshold, ordering, timespan, or cross-source entity joins.
+
+### Pitfall 7: Ignoring Backend Correlation Limits
+
+Backends vary in support for ordered temporal logic, chained correlations, field aliases, and distinct counts. A rule that converts syntactically can still lose detection semantics. Treat unsupported or partially supported correlation features as deployment blockers or partial coverage, not as pass.
+
 ---
 
 ## 8. Prompt Injection Safety Notice
@@ -522,3 +617,11 @@ This skill processes user-supplied content that may include log samples, detecti
 10. **MITRE Cyber Analytics Repository (CAR)** -- https://car.mitre.org/
 11. **Detection Engineering Maturity Model** -- Kyle Bailey, https://kyle-bailey.medium.com/detection-engineering-maturity-matrix-f4f3181a5cc7
 12. **Sigma Rule Creation Guide (SigmaHQ)** -- https://sigmahq.io/docs/guide/rules.html
+13. **Sigma Correlation Rules Specification** -- https://sigmahq.io/sigma-specification/specification/sigma-correlation-rules-specification.html
+
+---
+
+## 10. Changelog
+
+- **1.0.1** -- Added Sigma correlation decision gates, correlation template, backend support matrix, alias evidence, and sequence/count fixture requirements.
+- **1.0.0** -- Initial release. Covers Sigma rule authoring, ADS documentation, ATT&CK coverage mapping, and detection-as-code practices.
