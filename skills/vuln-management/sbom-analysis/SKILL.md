@@ -3,17 +3,17 @@ name: sbom-analysis
 description: >
   Analyzes Software Bills of Materials (SBOMs) for completeness against NTIA
   minimum elements, interprets VEX status documents, performs transitive
-  dependency risk analysis, and detects license conflicts. Supports CycloneDX 1.5
-  and SPDX 2.3 formats with CSAF-based VEX correlation. Auto-invoked when SBOM
+  dependency risk analysis, and detects license conflicts. Supports CycloneDX
+  1.5/1.6 and SPDX 2.3/3.x-aware review with CSAF-based VEX correlation. Auto-invoked when SBOM
   files are shared, supply chain risk questions arise, or VEX documents require
   interpretation.
 tags: [vuln-management, sbom, supply-chain]
 role: [security-engineer, appsec-engineer]
 phase: [build, operate]
-frameworks: [CycloneDX-1.5, SPDX-2.3, VEX-CSAF, NTIA-SBOM-Minimum-Elements]
+frameworks: [CycloneDX-1.5, CycloneDX-1.6, SPDX-2.3, SPDX-3.x, VEX-CSAF, NTIA-SBOM-Minimum-Elements]
 difficulty: intermediate
 time_estimate: "20-40min"
-version: "1.0.0"
+version: "1.0.1"
 author: unitoneai
 license: MIT
 allowed-tools: Read, Grep, Glob
@@ -21,9 +21,9 @@ injection-hardened: true
 argument-hint: "[target-file-or-directory]"
 ---
 
-# SBOM Analysis & VEX Review -- CycloneDX 1.5 / SPDX 2.3 / VEX (CSAF) / NTIA Minimum Elements
+# SBOM Analysis & VEX Review -- CycloneDX 1.5/1.6 / SPDX 2.3/3.x / VEX (CSAF) / NTIA Minimum Elements
 
-> **Frameworks:** CycloneDX 1.5 (OWASP), SPDX 2.3 (Linux Foundation / ISO 5962), VEX via CSAF 2.0 (OASIS), NTIA SBOM Minimum Elements
+> **Frameworks:** CycloneDX 1.5/1.6 (OWASP), SPDX 2.3/3.x (Linux Foundation / ISO 5962), VEX via CSAF 2.0 (OASIS), NTIA SBOM Minimum Elements
 > **Role:** Security Engineer, AppSec Engineer
 > **Time:** 20-40 min
 > **Output:** SBOM completeness assessment, VEX status summary, dependency risk analysis, and license conflict report
@@ -45,7 +45,7 @@ Use this skill when an SBOM file (CycloneDX or SPDX format) is shared for review
 Before starting, collect or confirm:
 
 - [ ] **SBOM file(s):** The actual SBOM document(s) in CycloneDX (JSON/XML) or SPDX (JSON/RDF/tag-value) format
-- [ ] **SBOM format and version:** CycloneDX 1.5, SPDX 2.3, or other (identify version explicitly)
+- [ ] **SBOM format and version:** CycloneDX 1.5/1.6, SPDX 2.3/3.x, or other (identify version explicitly)
 - [ ] **VEX document(s):** Associated VEX statements, if available (CSAF 2.0 format, CycloneDX VEX, or OpenVEX)
 - [ ] **Software identity:** Name, version, and vendor of the software the SBOM describes
 - [ ] **Intended use context:** Is this SBOM for procurement evaluation, compliance audit, incident response, or continuous monitoring?
@@ -63,21 +63,31 @@ If the SBOM format is ambiguous, inspect the file structure to determine the for
 
 Determine the SBOM format, version, and structural validity before analyzing content.
 
-**Framework mapping:** CycloneDX 1.5 (OWASP), SPDX 2.3 (Linux Foundation)
+**Framework mapping:** CycloneDX 1.5/1.6 (OWASP), SPDX 2.3/3.x (Linux Foundation)
 
-#### CycloneDX 1.5 Identification
+#### CycloneDX Identification
 
 CycloneDX SBOMs contain:
 - `bomFormat`: "CycloneDX"
-- `specVersion`: "1.5"
-- Top-level keys: `metadata`, `components`, `dependencies`, `compositions`, `vulnerabilities` (optional), `formulation` (new in 1.5)
+- `specVersion`: "1.5" or "1.6" (record exact version)
+- Top-level keys: `metadata`, `components`, `dependencies`, `compositions`, `vulnerabilities` (optional), `formulation`, and version-specific lifecycle/evidence/provenance fields
 
-#### SPDX 2.3 Identification
+#### SPDX Identification
 
 SPDX SBOMs contain:
-- `spdxVersion`: "SPDX-2.3"
+- `spdxVersion`: "SPDX-2.3" or SPDX 3.x profile/version indicators
 - `dataLicense`: "CC0-1.0"
 - Top-level keys: `creationInfo`, `packages`, `relationships`, `files` (optional), `snippets` (optional)
+
+#### Version Support Matrix
+
+| Format | Version | Handling |
+|---|---|---|
+| CycloneDX | 1.5 | Fully evaluate against the fields in this skill. |
+| CycloneDX | 1.6 | Accept and parse; evaluate 1.5-compatible fields plus note lifecycle, evidence, formulation, and provenance fields when present. |
+| SPDX | 2.3 | Fully evaluate against the fields in this skill. |
+| SPDX | 3.x | Accept where structurally identifiable; map packages/elements/relationships where possible and mark unsupported profile fields explicitly. |
+| Other / older / future | Any | Do not mark invalid solely because the version is newer. Record compatibility assumptions and unsupported fields. |
 
 ```
 SBOM Format Assessment:
@@ -85,11 +95,45 @@ SBOM Format Assessment:
 - Version:             [1.5 | 2.3 | Other]
 - Serialization:       [JSON | XML | RDF | Tag-Value]
 - Valid Structure:     [Yes | No -- list structural errors]
+- Compatibility Notes: [Unsupported/new fields, parser assumptions]
 - Component Count:     [N direct + N transitive = N total]
 - File Size:           [Size]
 ```
 
-### Step 2: NTIA Minimum Elements Completeness Check
+### Step 2: SBOM Trust, Provenance, and Artifact Binding
+
+Before grading completeness, determine whether the SBOM can be trusted as describing the claimed artifact or release. A complete SBOM is still weak evidence if it is unsigned, detached from the artifact digest, generated from a different build, or missing issuer/subject provenance.
+
+**Evidence to collect:**
+
+| Evidence | What to Verify |
+|---|---|
+| Artifact binding | SBOM references the release artifact digest, package URL, image digest, build ID, or commit SHA it describes. |
+| Signature or attestation | SBOM signature, provenance attestation, or signed advisory verifies successfully. |
+| Issuer and subject | Certificate/attestation issuer, subject, repository, workflow, or vendor identity matches the expected producer. |
+| Build timestamp | SBOM timestamp is consistent with the release/build timestamp and not older than the artifact it claims to describe. |
+| Generation source | Tool name/version and build pipeline step are recorded, or absence is called out. |
+| Distribution chain | Vendor portal, registry, release asset, or package metadata source is documented. |
+
+**Example verification commands to request or run when artifacts are available:**
+
+```bash
+cosign verify-blob --certificate sbom.cdx.json.pem --signature sbom.cdx.json.sig sbom.cdx.json
+cosign verify-attestation --type cyclonedx <image-ref>
+sha256sum <artifact> <sbom-file>
+```
+
+```
+SBOM Trust Assessment:
+- Artifact Binding:     [Present / Missing / Ambiguous]
+- Signature/Attestation:[Verified / Failed / Not Provided]
+- Issuer/Subject:       [Matches / Mismatch / Not Provided]
+- Build Timestamp:      [Consistent / Stale / Unknown]
+- Trust Rating:         [Trusted / Partially Trusted / Untrusted / Not Evaluable]
+- Notes:                [Evidence and gaps]
+```
+
+### Step 3: NTIA Minimum Elements Completeness Check
 
 Evaluate the SBOM against all seven NTIA "minimum elements for an SBOM" as defined in the July 2021 NTIA publication "The Minimum Elements for a Software Bill of Materials."
 
@@ -97,7 +141,7 @@ Evaluate the SBOM against all seven NTIA "minimum elements for an SBOM" as defin
 
 The seven NTIA minimum elements are:
 
-| # | NTIA Minimum Element | CycloneDX 1.5 Field | SPDX 2.3 Field | Required |
+| # | NTIA Minimum Element | CycloneDX Field | SPDX Field | Required |
 |---|---|---|---|---|
 | 1 | **Supplier Name** | `component.supplier.name` or `component.publisher` | `Package: PackageSupplier` | Yes |
 | 2 | **Component Name** | `component.name` | `Package: PackageName` | Yes |
@@ -111,6 +155,8 @@ The seven NTIA minimum elements are:
 
 For each component in the SBOM, evaluate presence of elements 1-5. Elements 6-7 are document-level (evaluated once).
 
+Interpret completeness by component type. OS, file, service, and container/image components may have supplier or version metadata represented differently than application packages. Still record the gap, but distinguish `Missing`, `NOASSERTION`/`NONE`, and `Documented unavailable with valid purl/digest/relationship evidence` rather than treating all cases as identical blocking failures.
+
 ```
 NTIA Completeness Assessment:
 - Total Components:           [N]
@@ -119,6 +165,8 @@ NTIA Completeness Assessment:
 - Version present:            [N/N] ([%])
 - Unique Identifier present:  [N/N] ([%])
 - Dependency Relationships:   [N/N] ([%]) components with at least one relationship
+- Documented Unavailable:     [N] fields with component-type rationale
+- NOASSERTION/NONE Values:    [N] fields explicitly asserted as unknown/none
 - SBOM Author:                [Present: name | Missing]
 - Timestamp:                  [Present: ISO 8601 datetime | Missing]
 - Overall Completeness:       [Complete | Partial -- list gaps | Incomplete]
@@ -133,7 +181,7 @@ NTIA Completeness Assessment:
 | **Partial** | 5-6 elements present for majority of components; significant gaps in supplier or dependency data |
 | **Incomplete** | Fewer than 5 elements consistently present; SBOM not suitable for compliance or risk assessment |
 
-### Step 3: VEX Status Interpretation
+### Step 4: VEX Status Interpretation
 
 If VEX (Vulnerability Exploitability eXchange) documents are provided, interpret the status for each vulnerability-product pair.
 
@@ -160,6 +208,17 @@ When a VEX status is "Not Affected," the document must include one of these just
 | **vulnerable_code_cannot_be_controlled_by_adversary** | The vulnerable code is present and reachable but attacker-controlled input cannot reach it | Requires threat model or data-flow analysis |
 | **inline_mitigations_already_exist** | Built-in mitigations (ASLR, sandboxing, etc.) prevent exploitation | Verify mitigations are active and effective |
 
+#### VEX Product Matching Requirements
+
+Before accepting a VEX status, map each VEX product reference to an SBOM component using stable identifiers. Prefer exact purl, CPE, SWID, SPDXID, CycloneDX `bom-ref`, package URL, artifact digest, and version range matching. A similarly named product is not enough.
+
+| Match State | Meaning | Action |
+|---|---|---|
+| Exact | VEX product reference maps to one SBOM component and version/range | Use the VEX status if justification evidence is sufficient. |
+| Ambiguous | VEX reference could match multiple SBOM components or versions | Do not clear the finding; require vendor clarification or stronger identifiers. |
+| Unmatched | VEX product reference does not map to any SBOM component | Treat VEX as not applicable to this SBOM component. |
+| Version drift | Product matches by name but version/range differs | Require corrected VEX or independent validation. |
+
 ```
 VEX Assessment:
 - VEX Format:          [CSAF 2.0 | CycloneDX VEX | OpenVEX]
@@ -168,9 +227,10 @@ VEX Assessment:
 - Affected:            [N] (require remediation)
 - Fixed:               [N] (verify deployment)
 - Under Investigation: [N] (monitor for updates)
+- Product Matches:     [N exact / N ambiguous / N unmatched / N version drift]
 ```
 
-### Step 4: Transitive Dependency Analysis
+### Step 5: Transitive Dependency Analysis
 
 Analyze the dependency tree to identify risk concentration in transitive (indirect) dependencies.
 
@@ -203,7 +263,7 @@ Transitive Dependency Analysis:
 - Stale Dependencies:       [N] components with no update in >= 18 months
 ```
 
-### Step 5: License Conflict Detection
+### Step 6: License Conflict Detection
 
 Analyze component licenses for conflicts, compliance risks, and policy violations.
 
@@ -245,10 +305,10 @@ Classify the overall SBOM analysis into one of the following states:
 
 | Classification | Definition | Criteria |
 |---|---|---|
-| **Critical Supply Chain Risk** | SBOM reveals high-risk supply chain exposure | Known exploited CVEs in dependencies, incomplete SBOM with missing critical elements, or license conflicts blocking distribution |
-| **Elevated Risk** | SBOM has notable gaps or concerning findings | NTIA completeness < 90%, multiple stale transitive dependencies, or VEX "Under Investigation" for critical components |
-| **Acceptable** | SBOM meets minimum requirements with minor gaps | NTIA completeness >= 90%, no critical/high CVEs in dependencies, minor license issues documented |
-| **Strong** | SBOM is comprehensive and low-risk | NTIA 100% complete, all VEX statuses resolved, no critical dependency risks, clean license posture |
+| **Critical Supply Chain Risk** | SBOM reveals high-risk supply chain exposure | Known exploited CVEs in dependencies, incomplete SBOM with missing critical elements, untrusted SBOM for a critical artifact, VEX mismatch used to suppress a critical vulnerability, or license conflicts blocking distribution |
+| **Elevated Risk** | SBOM has notable gaps or concerning findings | NTIA completeness < 90%, missing provenance/signature for high-risk software, multiple stale transitive dependencies, ambiguous VEX matches, or VEX "Under Investigation" for critical components |
+| **Acceptable** | SBOM meets minimum requirements with minor gaps | NTIA completeness >= 90%, SBOM provenance is documented or explicitly not required, no critical/high CVEs in dependencies, minor license issues documented |
+| **Strong** | SBOM is comprehensive and low-risk | NTIA 100% complete, trusted artifact binding/signature/attestation, all VEX statuses exactly matched and resolved, no critical dependency risks, clean license posture |
 
 ---
 
@@ -259,8 +319,8 @@ Produce a structured report with these exact sections:
 ```markdown
 ## SBOM Analysis Report
 **Date:** [YYYY-MM-DD]
-**Skill:** sbom-analysis v1.0.0
-**Frameworks:** CycloneDX 1.5, SPDX 2.3, VEX (CSAF), NTIA Minimum Elements
+**Skill:** sbom-analysis v1.0.1
+**Frameworks:** CycloneDX 1.5/1.6, SPDX 2.3/3.x, VEX (CSAF), NTIA Minimum Elements
 **Reviewer:** AI-assisted (human review required for license conflicts and risk decisions)
 
 ### Executive Summary
@@ -273,11 +333,24 @@ conflicts), and overall classification.]
 |---|---|
 | Software Name | [Name] |
 | Software Version | [Version] |
-| SBOM Format | [CycloneDX 1.5 / SPDX 2.3] |
+| SBOM Format | [CycloneDX 1.5/1.6 / SPDX 2.3/3.x / Other] |
 | Serialization | [JSON / XML / Other] |
+| Compatibility Notes | [Unsupported/new fields, parser assumptions] |
 | Total Components | [N] (direct: [N], transitive: [N]) |
 | SBOM Author | [Author name] |
 | SBOM Timestamp | [ISO 8601] |
+
+### SBOM Trust and Provenance
+
+| Trust Evidence | Status | Notes |
+|---|---|---|
+| Artifact Binding | [Present/Missing/Ambiguous] | [Digest, purl, image ref, release ID] |
+| Signature / Attestation | [Verified/Failed/Not Provided] | [Tool and issuer] |
+| Issuer / Subject Match | [Matches/Mismatch/Not Provided] | [Expected producer] |
+| Build Timestamp | [Consistent/Stale/Unknown] | [Comparison] |
+| Generation Source | [Present/Missing] | [Tool/pipeline] |
+
+**Trust Rating:** [Trusted / Partially Trusted / Untrusted / Not Evaluable]
 
 ### NTIA Minimum Elements Compliance
 
@@ -291,14 +364,15 @@ conflicts), and overall classification.]
 | Author of SBOM Data | [Pass/Fail] | Document-level | [Notes] |
 | Timestamp | [Pass/Fail] | Document-level | [Notes] |
 
+**Component-Type Notes:** [OS/file/service/container metadata limitations, NOASSERTION/NONE values, and documented unavailable fields]
 **NTIA Completeness Rating:** [Complete / Substantially Complete / Partial / Incomplete]
 
 ### VEX Status Summary
 [If VEX documents are provided]
 
-| CVE ID | Component | VEX Status | Justification | Action |
-|---|---|---|---|---|
-| [CVE-ID] | [component] | [Not Affected/Affected/Fixed/Under Investigation] | [justification if Not Affected] | [action] |
+| CVE ID | Component | VEX Product Ref | Match State | VEX Status | Justification | Evidence Required | Action |
+|---|---|---|---|---|---|---|---|
+| [CVE-ID] | [component] | [purl/CPE/SWID/bom-ref] | [Exact/Ambiguous/Unmatched/Version drift] | [Not Affected/Affected/Fixed/Under Investigation] | [justification if Not Affected] | [validation evidence] | [action] |
 
 ### Transitive Dependency Risk
 
@@ -334,8 +408,8 @@ conflicts), and overall classification.]
 
 ### References
 - NTIA SBOM Minimum Elements: https://www.ntia.gov/sites/default/files/publications/sbom_minimum_elements_report_0.pdf
-- CycloneDX 1.5 Specification: https://cyclonedx.org/docs/1.5/
-- SPDX 2.3 Specification: https://spdx.github.io/spdx-spec/v2.3/
+- CycloneDX Specification: https://cyclonedx.org/docs/
+- SPDX Specifications: https://spdx.dev/specifications/
 - VEX (CSAF): https://docs.oasis-open.org/csaf/csaf/v2.0/csaf-v2.0.html
 - Vendor advisory: [URL if applicable]
 ```
@@ -344,15 +418,15 @@ conflicts), and overall classification.]
 
 ## Framework Reference
 
-### CycloneDX 1.5 (OWASP)
-A lightweight SBOM standard supporting multiple use cases (software, hardware, services, cryptography). Version 1.5 adds formulation data (build environment), machine learning model transparency, and enhanced licensing support.
-- Specification: https://cyclonedx.org/docs/1.5/
+### CycloneDX 1.5/1.6 (OWASP)
+A lightweight SBOM standard supporting multiple use cases (software, hardware, services, cryptography). Version 1.5 adds formulation data (build environment), machine learning model transparency, and enhanced licensing support; 1.6 adds newer lifecycle, evidence, and provenance fields that should be parsed or explicitly marked unsupported.
+- Specification: https://cyclonedx.org/docs/
 - Schema: https://github.com/CycloneDX/specification
 - Tool Center: https://cyclonedx.org/tool-center/
 
-### SPDX 2.3 (Linux Foundation / ISO/IEC 5962:2021)
-An international open standard (ISO 5962) for communicating SBOM information including components, licenses, copyrights, and security references. SPDX 2.3 is the latest stable release in the 2.x line.
-- Specification: https://spdx.github.io/spdx-spec/v2.3/
+### SPDX 2.3/3.x (Linux Foundation / ISO/IEC 5962:2021)
+An international open standard (ISO 5962) for communicating SBOM information including components, licenses, copyrights, and security references. SPDX 2.3 remains common in tooling; SPDX 3.x introduces profiles and model changes that should be mapped where possible instead of rejected as invalid by default.
+- Specification: https://spdx.dev/specifications/
 - License List: https://spdx.org/licenses/
 - Tools: https://tools.spdx.org/
 
@@ -377,9 +451,13 @@ Published by NTIA in July 2021 as part of Executive Order 14028 implementation. 
 
 3. **Treating VEX "Not Affected" as automatic clearance.** A VEX "Not Affected" status is only as trustworthy as its justification. "Component not present" is verifiable against the SBOM; "vulnerable code not in execute path" requires code-level analysis that should be validated independently for critical systems. Always review the justification category and assess its credibility.
 
-4. **Overlooking license implications in SaaS deployments.** AGPL-3.0 triggers copyleft obligations for network use (SaaS), unlike GPL which only triggers on distribution. Organizations running AGPL-licensed components in SaaS products may have unrecognized compliance obligations. Always flag AGPL components regardless of distribution model.
+4. **Trusting an unsigned or detached SBOM because it is complete.** Completeness and authenticity are separate questions. A well-formed SBOM can still describe the wrong build if it lacks artifact digest binding, a trusted signature/attestation, issuer/subject evidence, or a timestamp consistent with the release.
 
-5. **Failing to track SBOM freshness.** An SBOM is a point-in-time snapshot. Software composition changes with every dependency update, build, or deployment. SBOMs older than the most recent build/release are potentially inaccurate. Check the SBOM timestamp against the software's actual release date and flag stale SBOMs.
+5. **Overlooking license implications in SaaS deployments.** AGPL-3.0 triggers copyleft obligations for network use (SaaS), unlike GPL which only triggers on distribution. Organizations running AGPL-licensed components in SaaS products may have unrecognized compliance obligations. Always flag AGPL components regardless of distribution model.
+
+6. **Failing to track SBOM freshness.** An SBOM is a point-in-time snapshot. Software composition changes with every dependency update, build, or deployment. SBOMs older than the most recent build/release are potentially inaccurate. Check the SBOM timestamp against the software's actual release date and flag stale SBOMs.
+
+7. **Using VEX for a similarly named component.** VEX status applies to a product identity, not a loose name. Do not suppress a finding unless the VEX purl, CPE, SWID, SPDXID, `bom-ref`, artifact digest, and version range map to the SBOM component with exact or well-documented confidence.
 
 ---
 
@@ -397,9 +475,9 @@ Published by NTIA in July 2021 as part of Executive Order 14028 implementation. 
 
 - NTIA Minimum Elements for an SBOM: https://www.ntia.gov/sites/default/files/publications/sbom_minimum_elements_report_0.pdf
 - NTIA SBOM FAQ: https://www.ntia.gov/page/software-bill-materials
-- CycloneDX 1.5 Specification: https://cyclonedx.org/docs/1.5/
+- CycloneDX Specifications: https://cyclonedx.org/docs/
 - CycloneDX GitHub: https://github.com/CycloneDX/specification
-- SPDX 2.3 Specification: https://spdx.github.io/spdx-spec/v2.3/
+- SPDX Specifications: https://spdx.dev/specifications/
 - SPDX License List: https://spdx.org/licenses/
 - CSAF 2.0 (OASIS): https://docs.oasis-open.org/csaf/csaf/v2.0/csaf-v2.0.html
 - CISA VEX Minimum Requirements: https://www.cisa.gov/sites/default/files/2023-04/minimum-requirements-for-vex-508c.pdf
