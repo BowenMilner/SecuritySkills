@@ -12,7 +12,7 @@ phase: [build, deploy]
 frameworks: [SLSA-v1.0, OWASP-CICD-Top-10]
 difficulty: intermediate
 time_estimate: "30-60min"
-version: "1.0.0"
+version: "1.0.1"
 author: unitoneai
 license: MIT
 allowed-tools: Read, Grep, Glob
@@ -305,6 +305,8 @@ runs-on: self-hosted  # Shared runners are a risk
 - Secrets passed as command-line arguments (visible in process listings).
 - Hardcoded credentials in pipeline configuration files.
 - Missing secret rotation policies.
+- OIDC federation that is present but too broad: wildcard subjects, missing audience checks, unvalidated reusable workflow claims, or production roles without protected-environment evidence.
+- Fork or pull-request triggers that can reach a cloud credential path through broad trust-policy claims.
 
 **Grep patterns:**
 
@@ -327,7 +329,24 @@ runs-on: self-hosted  # Shared runners are a risk
     DEPLOY_TOKEN: ${{ secrets.DEPLOY_TOKEN }}
 ```
 
-**Finding format:** Report credential types in use (long-lived vs. short-lived), whether OIDC/workload identity is used where available, and any secrets exposed in logs or command arguments.
+**OIDC trust-policy evidence to collect:**
+
+| Provider | Claim / Control | Required Evidence |
+|---|---|---|
+| GitHub Actions | issuer, `aud`, `sub`, `repository_owner`, `ref`, `environment`, `job_workflow_ref` | Exact repo/branch/tag/environment or reusable workflow scope; protected environment approval for production roles. |
+| GitLab CI | issuer, audience, project path, ref type/name, environment | Exact project/ref/environment scope and protected branch/tag/environment evidence. |
+| Azure DevOps | issuer, subject identifier, audience, service connection scope | Exact project/pipeline/environment scope and approval gate evidence. |
+| CircleCI / other OIDC providers | issuer, audience, project/org, branch/tag, context | Provider-specific claims mapped to one intended workload and environment. |
+
+**OIDC review rules:**
+
+- Accept OIDC federation as controlled only when issuer, audience, subject/claim scope, repository or project owner, branch/tag/environment, and downstream role policy are all evidenced.
+- For production roles, require protected environment evidence such as required reviewers, deployment-branch rules, or equivalent approval gates.
+- For reusable workflows, verify `job_workflow_ref` or equivalent claims prevent unrelated workflows from minting credentials.
+- For fork and pull-request paths, verify workflow triggers and trust-policy claims prevent untrusted contributors from reaching credential exchange.
+- Treat short token TTL as defense-in-depth; it does not compensate for wildcard subjects or broad downstream role scope.
+
+**Finding format:** Report credential types in use (long-lived vs. short-lived), whether OIDC/workload identity is used where available, OIDC trust-policy claim evidence, protected-environment evidence, fork/reusable workflow credential paths, and any secrets exposed in logs or command arguments.
 
 ---
 
@@ -488,6 +507,7 @@ Produce the final report using the following structure:
 - **File:** <path to relevant config>
 - **Line(s):** <line numbers if applicable>
 - **Description:** <what was found>
+- **OIDC Trust Evidence:** <issuer, audience, subject/claim scope, environment protection, reusable workflow claim, fork/PR path, and downstream role scope reviewed when applicable>
 - **Remediation:** <specific fix>
 
 ### Prioritized Remediation Plan
@@ -550,6 +570,9 @@ This skill processes user-supplied content including CI/CD configuration files, 
 - SLSA Build Track: https://slsa.dev/spec/v1.0/levels#build-track
 - OWASP Top 10 CI/CD Security Risks: https://owasp.org/www-project-top-10-ci-cd-security-risks/
 - GitHub Actions Security Hardening: https://docs.github.com/en/actions/security-guides/security-hardening-for-github-actions
+- GitHub Actions OIDC hardening with cloud providers: https://docs.github.com/en/actions/deployment/security-hardening-your-deployments/configuring-openid-connect-in-cloud-providers
+- GitLab OIDC ID tokens: https://docs.gitlab.com/ci/secrets/id_token_authentication/
+- Azure DevOps workload identity federation: https://learn.microsoft.com/en-us/azure/devops/pipelines/library/connect-to-azure
 - Sigstore / Cosign: https://docs.sigstore.dev/
 - SLSA GitHub Generator: https://github.com/slsa-framework/slsa-github-generator
 
@@ -557,4 +580,5 @@ This skill processes user-supplied content including CI/CD configuration files, 
 
 ## Changelog
 
+- **1.0.1** -- Added OIDC trust-policy claim, protected-environment, reusable-workflow, and fork/PR credential-path evidence gates.
 - **1.0.0** -- Initial release. Full coverage of SLSA v1.0 build track and OWASP Top 10 CI/CD Security Risks (CICD-SEC-1 through CICD-SEC-10).
