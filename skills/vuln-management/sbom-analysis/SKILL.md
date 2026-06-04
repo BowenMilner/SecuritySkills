@@ -13,7 +13,7 @@ phase: [build, operate]
 frameworks: [CycloneDX-1.5, SPDX-2.3, VEX-CSAF, NTIA-SBOM-Minimum-Elements]
 difficulty: intermediate
 time_estimate: "20-40min"
-version: "1.0.0"
+version: "1.0.1"
 author: unitoneai
 license: MIT
 allowed-tools: Read, Grep, Glob
@@ -128,10 +128,58 @@ NTIA Completeness Assessment:
 
 | Rating | Criteria |
 |---|---|
-| **Complete** | All 7 NTIA elements present for 100% of components |
-| **Substantially Complete** | All 7 elements present for >= 90% of components; gaps documented |
+| **Complete** | All 7 NTIA elements present for 100% of components and composition scope is complete or independently verified |
+| **Substantially Complete** | All 7 elements present for >= 90% of components; gaps documented; composition scope is not unknown/redacted for affected conclusions |
 | **Partial** | 5-6 elements present for majority of components; significant gaps in supplier or dependency data |
 | **Incomplete** | Fewer than 5 elements consistently present; SBOM not suitable for compliance or risk assessment |
+
+### Step 2A: Composition Completeness and Analysis Scope Gate
+
+Before assigning NTIA completeness, VEX confidence, transitive dependency risk, or license confidence, evaluate the declared scope of the SBOM.
+
+#### CycloneDX Composition Completeness
+
+CycloneDX `bom.compositions[]` can state whether component, service, vulnerability, and dependency inventories are complete, incomplete, unknown, or redacted. Treat these declarations as confidence evidence, not optional metadata.
+
+| Aggregate value | Review handling |
+|---|---|
+| `complete` | Eligible for Complete/Strong confidence if all other gates pass. |
+| `incomplete`, `incomplete_first_party_only`, `incomplete_third_party_only`, or other `incomplete*` values | Mark completeness as Partial for affected assemblies/dependencies; identify which side of the inventory is missing. |
+| `unknown` | Mark affected conclusions as Low confidence or Not Evaluable; do not infer completeness from field presence. |
+| `redacted` | Mark as Redacted; require trusted private evidence before high-confidence security or license conclusions. |
+| Missing `compositions` | Record as Not Declared; do not assume complete unless independent generation/evidence proves scope. |
+
+#### SPDX `filesAnalyzed` Scope
+
+For SPDX 2.3 packages, `filesAnalyzed=false` is valid for package-level metadata and URI/package references. It also limits what the SBOM can prove.
+
+| SPDX evidence | Review handling |
+|---|---|
+| `filesAnalyzed=true` or omitted with file entries | File-level conclusions may be made when package verification code and file license evidence support them. |
+| `filesAnalyzed=false` | Absence of `packageVerificationCode` is valid, but file-level claims are out of scope unless other evidence is provided. |
+| `filesAnalyzed=false` with file-level license/completeness claims | Flag as overclaiming unless supported by separate scanner or attestation evidence. |
+| Package-level purl/externalRef only | Treat as package identity evidence, not proof that all files, embedded components, or vendored code were analyzed. |
+
+#### Analysis Scope Fields
+
+Capture these fields in every assessment:
+
+```text
+Analysis Scope:
+- SBOM generation source: source / lockfile / package / image / runtime / vendor attestation / unknown
+- File-level analysis: yes / no / partial / unknown
+- CycloneDX composition aggregate: complete / incomplete / unknown / redacted / not declared / N/A
+- SPDX filesAnalyzed: true / false / omitted / N/A
+- Confidence impact: strong / acceptable / partial / low / not evaluable
+```
+
+**Scope gates:**
+
+- [ ] Do not rate an SBOM as Complete or Strong when CycloneDX compositions are `unknown`, `redacted`, or affected by `incomplete*` without compensating evidence.
+- [ ] Do not make file-level license, tamper, or content-completeness claims from SPDX packages with `filesAnalyzed=false`.
+- [ ] Treat missing compositions as Not Declared, not proof of completeness.
+- [ ] Record generation source because source-, lockfile-, image-, runtime-, and vendor-attested SBOMs support different conclusions.
+- [ ] Separate package-level metadata confidence from file-level analysis confidence.
 
 ### Step 3: VEX Status Interpretation
 
@@ -237,6 +285,19 @@ License Analysis:
 - Conflicts Detected:   [N] -- list specific conflicts
 ```
 
+#### License Confidence Evidence
+
+Separate declared, concluded, and file-analyzed license evidence before rating compliance confidence.
+
+| Evidence | Meaning | Confidence impact |
+|---|---|---|
+| Declared license | Package or upstream metadata says which license applies. | Useful but not enough for high-confidence file-level conclusions. |
+| Concluded license | Scanner or reviewer concluded license from evidence. | Stronger when file-level analysis is in scope. |
+| `NOASSERTION` | The producer makes no assertion. | Treat as unknown for the affected field; do not count as clean. |
+| `NONE` | Producer asserts no license applies/found. | Requires review; may be acceptable for proprietary/internal code but not for third-party compliance clearance. |
+| Missing license field | No evidence supplied. | Unknown; requires follow-up. |
+| `filesAnalyzed=false` with concluded `NOASSERTION` | Package-level only and no file-level conclusion. | Low confidence for license compliance until additional evidence exists. |
+
 ---
 
 ## Findings Classification
@@ -246,9 +307,9 @@ Classify the overall SBOM analysis into one of the following states:
 | Classification | Definition | Criteria |
 |---|---|---|
 | **Critical Supply Chain Risk** | SBOM reveals high-risk supply chain exposure | Known exploited CVEs in dependencies, incomplete SBOM with missing critical elements, or license conflicts blocking distribution |
-| **Elevated Risk** | SBOM has notable gaps or concerning findings | NTIA completeness < 90%, multiple stale transitive dependencies, or VEX "Under Investigation" for critical components |
-| **Acceptable** | SBOM meets minimum requirements with minor gaps | NTIA completeness >= 90%, no critical/high CVEs in dependencies, minor license issues documented |
-| **Strong** | SBOM is comprehensive and low-risk | NTIA 100% complete, all VEX statuses resolved, no critical dependency risks, clean license posture |
+| **Elevated Risk** | SBOM has notable gaps or concerning findings | NTIA completeness < 90%, unknown/redacted/incomplete composition for key conclusions, multiple stale transitive dependencies, or VEX "Under Investigation" for critical components |
+| **Acceptable** | SBOM meets minimum requirements with minor gaps | NTIA completeness >= 90%, scope limitations documented, no critical/high CVEs in dependencies, minor license issues documented |
+| **Strong** | SBOM is comprehensive and low-risk | NTIA 100% complete, composition scope complete or independently verified, all VEX statuses resolved, no critical dependency risks, clean license posture with adequate analysis scope |
 
 ---
 
@@ -279,6 +340,17 @@ conflicts), and overall classification.]
 | SBOM Author | [Author name] |
 | SBOM Timestamp | [ISO 8601] |
 
+### Analysis Scope and Confidence
+
+| Field | Value |
+|---|---|
+| SBOM Generation Source | [source / lockfile / package / image / runtime / vendor attestation / unknown] |
+| File-Level Analysis | [yes / no / partial / unknown] |
+| CycloneDX Composition Aggregate | [complete / incomplete / unknown / redacted / not declared / N/A] |
+| SPDX filesAnalyzed | [true / false / omitted / N/A] |
+| Scope Limitations | [package-level only / redacted first-party / missing third-party / none / other] |
+| Confidence Impact | [strong / acceptable / partial / low / not evaluable] |
+
 ### NTIA Minimum Elements Compliance
 
 | NTIA Element | Status | Coverage | Notes |
@@ -292,6 +364,12 @@ conflicts), and overall classification.]
 | Timestamp | [Pass/Fail] | Document-level | [Notes] |
 
 **NTIA Completeness Rating:** [Complete / Substantially Complete / Partial / Incomplete]
+
+### Composition Completeness
+
+| Scope | Aggregate | Affected Assemblies/Dependencies | Review Handling | Confidence Impact |
+|---|---|---|---|---|
+| [components/dependencies/services/vulnerabilities] | [complete/incomplete/unknown/redacted/not declared] | [bom-ref or package id] | [eligible / partial / low / not evaluable] | [Notes] |
 
 ### VEX Status Summary
 [If VEX documents are provided]
@@ -319,6 +397,12 @@ conflicts), and overall classification.]
 | Strong Copyleft | [N] | [List -- flag for review] |
 | Proprietary | [N] | [List] |
 | No License / Unknown | [N] | [List -- mandatory review] |
+
+### License Confidence
+
+| Component | Declared License | Concluded License | File-Level Evidence | Copyright Evidence | Confidence |
+|---|---|---|---|---|---|
+| [component] | [MIT/NOASSERTION/missing] | [MIT/NOASSERTION/NONE] | [yes/no/partial] | [present/NOASSERTION/missing] | [strong/partial/low] |
 
 **Conflicts Detected:** [Yes/No]
 [If yes, list each conflict with affected components and remediation guidance]
@@ -381,6 +465,10 @@ Published by NTIA in July 2021 as part of Executive Order 14028 implementation. 
 
 5. **Failing to track SBOM freshness.** An SBOM is a point-in-time snapshot. Software composition changes with every dependency update, build, or deployment. SBOMs older than the most recent build/release are potentially inaccurate. Check the SBOM timestamp against the software's actual release date and flag stale SBOMs.
 
+6. **Treating listed fields as proof of complete composition.** An SBOM can contain valid NTIA fields for listed components while CycloneDX `compositions[].aggregate` says dependencies are `unknown`, `incomplete`, or `redacted`. Lower confidence when the producer declares known unknowns.
+
+7. **Making file-level claims from package-level SPDX metadata.** `filesAnalyzed=false` is valid, and the missing package verification code is not automatically an error. It does mean file-level license, tamper, and embedded-component conclusions are out of scope unless separate evidence exists.
+
 ---
 
 ## Prompt Injection Safety Notice
@@ -398,6 +486,7 @@ Published by NTIA in July 2021 as part of Executive Order 14028 implementation. 
 - NTIA Minimum Elements for an SBOM: https://www.ntia.gov/sites/default/files/publications/sbom_minimum_elements_report_0.pdf
 - NTIA SBOM FAQ: https://www.ntia.gov/page/software-bill-materials
 - CycloneDX 1.5 Specification: https://cyclonedx.org/docs/1.5/
+- CycloneDX Authoritative Guide to SBOM: https://cyclonedx.org/guides/sbom/
 - CycloneDX GitHub: https://github.com/CycloneDX/specification
 - SPDX 2.3 Specification: https://spdx.github.io/spdx-spec/v2.3/
 - SPDX License List: https://spdx.org/licenses/
@@ -408,3 +497,10 @@ Published by NTIA in July 2021 as part of Executive Order 14028 implementation. 
 - EU Cyber Resilience Act: https://digital-strategy.ec.europa.eu/en/policies/cyber-resilience-act
 - OSV (Open Source Vulnerability Database): https://osv.dev/
 - GitHub Advisory Database: https://github.com/advisories
+
+---
+
+## Changelog
+
+- **1.0.1** -- Added CycloneDX composition completeness gates, SPDX filesAnalyzed scope handling, analysis-scope confidence fields, and license confidence evidence.
+- **1.0.0** -- Initial release. Covers SBOM completeness, VEX interpretation, transitive dependency risk, and license conflict analysis.
