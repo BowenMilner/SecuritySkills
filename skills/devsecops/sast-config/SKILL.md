@@ -12,7 +12,7 @@ phase: [build]
 frameworks: [OWASP-ASVS-4.0.3, CWE-Top-25]
 difficulty: intermediate
 time_estimate: "30-60min"
-version: "1.0.0"
+version: "1.0.1"
 author: unitoneai
 license: MIT
 allowed-tools: Read, Grep, Glob
@@ -199,17 +199,25 @@ rules:
       confidence: HIGH
 
   - id: custom.crypto.weak-random
-    patterns:
+    mode: taint
+    pattern-sources:
       - pattern-either:
           - pattern: random.random()
           - pattern: random.randint(...)
           - pattern: Math.random()
-      - pattern-not-inside: |
-          # nosemgrep: custom.crypto.weak-random
-          ...
+    pattern-sinks:
+      - pattern-either:
+          - pattern: secrets_store($RANDOM)
+          - pattern: create_session_token($RANDOM)
+          - pattern: password_reset_code($RANDOM)
+          - pattern: csrf_token($RANDOM)
+          - pattern: api_key($RANDOM)
+    pattern-sanitizers:
+      - pattern: secrets.token_bytes(...)
+      - pattern: crypto.getRandomValues(...)
     message: >
-      Weak PRNG used in potentially security-sensitive context. Use
-      secrets.token_bytes() or crypto.getRandomValues() for security purposes.
+      Weak PRNG value flows into a security-sensitive token, key, nonce, or
+      authorization context. Use secrets.token_bytes() or crypto.getRandomValues().
     languages: [python, javascript]
     severity: WARNING
     metadata:
@@ -229,6 +237,33 @@ rules:
 - [ ] `confidence` is documented (HIGH, MEDIUM, LOW).
 - [ ] `languages` is explicitly specified.
 - [ ] `pattern-not` or `pattern-not-inside` handles known safe patterns to reduce false positives.
+
+#### 3.3 Source-to-Sink Rule Evidence
+
+For vulnerability classes where exploitability depends on data flow, require flow-sensitive evidence instead of broad point-pattern matches.
+
+**Use taint or path modeling for:**
+
+| Weakness class | Required evidence |
+|----------------|-------------------|
+| SQL/NoSQL/LDAP/command injection | Source, sink, sanitizer, and at least one helper/local-variable propagation fixture. |
+| SSRF and URL fetches | Untrusted URL source, network/file sink, allowlist or parser sanitizer, and redirect handling note. |
+| Path traversal and file access | User-controlled path source, filesystem sink, canonicalization/allowlist sanitizer, and symlink/encoding edge case. |
+| Template injection / XSS | Template/render sink, encoding or safe-template sanitizer, and context-specific benign fixture. |
+| Unsafe deserialization | Untrusted payload source, deserialization sink, safe parser/schema sanitizer, and type restriction evidence. |
+| Weak randomness | Security-sensitive sink evidence: token, session ID, reset code, CSRF nonce, invite code, key material, signing secret, or authorization decision. |
+
+**Semgrep taint-mode checklist:**
+
+- [ ] `mode: taint` is used, or the rule documents why a point pattern is sufficient.
+- [ ] `pattern-sources` identify untrusted input or weak primitive sources.
+- [ ] `pattern-sinks` identify the security boundary being reached.
+- [ ] `pattern-sanitizers` and/or `pattern-not` preserve known safe paths.
+- [ ] `pattern-propagators` are included when wrappers, builders, or helper functions carry the value.
+- [ ] Vulnerable fixtures prove flow through a local variable/helper.
+- [ ] Benign fixtures prove a real sanitizer or non-security use is not flagged.
+
+Broad point-pattern examples such as `Math.random()` or `random.random()` should be `INFO` unless the variable name, call context, or data flow reaches a security-sensitive sink. Non-security uses such as A/B testing, cosmetic jitter, sampling, randomized UI ordering, and load-balancing experiments must not be reported as weak-crypto findings.
 
 ---
 
@@ -350,21 +385,41 @@ ticket         |
 **Suppression requirements:**
 
 ```python
-# Semgrep inline suppression -- MUST include justification
-value = request.args.get("id")  # nosemgrep: python.django.security.injection.sql.sql-injection -- validated by ORM layer, not raw SQL
+# Semgrep inline suppression -- MUST include actionable metadata
+value = request.args.get("id")  # nosemgrep: python.django.security.injection.sql.sql-injection -- reason=validated-by-orm owner=appsec ticket=APPSEC-1234 expires=2026-09-30 scope=finding
 
 # CodeQL suppression via query filter (in codeql-config.yml)
 # Document in SAST-SUPPRESSIONS.md with ticket reference
 ```
 
+**Suppression evidence fields:**
+
+| Field | Required | Description |
+|-------|----------|-------------|
+| Reason category | Yes | False positive, accepted risk, generated code, test fixture, compensating control, or rule defect. |
+| Owner | Yes | Person or team accountable for re-review. |
+| Ticket/reference | Yes | Tracking issue, risk acceptance, or upstream rule bug. |
+| Scope | Yes | Finding-level, file-level, path-level, or rule-level. |
+| Review/expiry date | Yes | Date when the suppression must be revalidated or removed. |
+| Compensating evidence | Conditional | Required when suppressing exploitable sinks or accepted-risk findings. |
+
+**Suppression review rules:**
+
+- [ ] Flag `nosemgrep`, CodeQL dismissals, or query filters with only `TODO`, `false positive`, or no explanation as **Medium**.
+- [ ] Flag suppressions that hide reachable sinks without owner, ticket, expiry, or compensating evidence as **High**.
+- [ ] Flag rule-level suppressions when a narrower finding-level suppression would preserve coverage.
+- [ ] Sample stale suppressions during quarterly review; do not only count total suppressions.
+- [ ] Separate rule defects from accepted risk so teams fix noisy rules instead of permanently hiding true positives.
+
 **What to verify:**
 
 - Every suppression has a documented justification (not just `nosemgrep`).
+- Every suppression has owner, ticket/reference, scope, and review or expiry date.
 - Suppressions are reviewed periodically (quarterly).
 - False positive rate is tracked as a metric (target: < 20% FP rate).
 - True positive findings have a defined SLA (Critical: 7 days, High: 30 days, Medium: 90 days).
 
-**Finding classification:** No false positive management process is **Medium**. Suppressions without justification is **High**. No SLA for true positive remediation is **Medium**.
+**Finding classification:** No false positive management process is **Medium**. Suppressions without justification is **High**. Suppressions without owner, ticket/reference, scope, or review/expiry date are **Medium**. Suppressions hiding exploitable sinks without compensating evidence are **High**. No SLA for true positive remediation is **Medium**.
 
 ---
 
@@ -440,8 +495,8 @@ jobs:
 | Severity | Definition |
 |----------|-----------|
 | **Critical** | No SAST tooling deployed; CWE Top 5 weaknesses with zero rule coverage for languages in active use. |
-| **High** | SAST not a required CI check; CWE Top 10 coverage gap; suppressions without justification; no triage workflow; custom rules with incorrect severity mapping. |
-| **Medium** | CWE 11-25 coverage gap; no false positive management process; no scheduled full-repo scan; no remediation SLA; excessive path exclusions; FP rate > 30%. |
+| **High** | SAST not a required CI check; CWE Top 10 coverage gap; suppressions without justification; suppressions hiding exploitable sinks without compensating evidence; no triage workflow; custom rules with incorrect severity mapping. |
+| **Medium** | CWE 11-25 coverage gap; no false positive management process; no scheduled full-repo scan; no remediation SLA; excessive path exclusions; FP rate > 30%; suppressions missing owner, ticket, scope, or review/expiry date; source-to-sink classes modeled only with broad point patterns. |
 | **Low** | Rule naming convention inconsistencies; missing metadata on custom rules; suboptimal scan performance; cosmetic configuration issues. |
 
 ---
@@ -474,6 +529,18 @@ jobs:
 | Required status check | Yes/No | <branch protection config> |
 | Scheduled full scan | Yes/No | <cron schedule> |
 | Results dashboard | Yes/No | <dashboard URL or tool> |
+
+### Source-to-Sink Rule Evidence
+
+| Rule ID | Weakness Class | Flow Model | Sources | Sinks | Sanitizers | Vulnerable Fixture | Benign Fixture | Status |
+|---------|----------------|------------|---------|-------|------------|--------------------|----------------|--------|
+| custom.sql-injection | CWE-89 | Semgrep taint | req.query | db.query | parameterized query | yes | yes | Pass |
+
+### Suppression Register
+
+| Suppression | Scope | Reason | Owner | Ticket | Review/Expiry | Compensating Evidence | Status |
+|-------------|-------|--------|-------|--------|---------------|-----------------------|--------|
+| nosemgrep: custom.rule | finding | false positive | appsec | APPSEC-1234 | 2026-09-30 | ORM parameterization proof | Active |
 
 ### Findings
 
@@ -536,6 +603,10 @@ jobs:
 
 5. **Ignoring SAST scan performance.** If SAST takes 30 minutes on a PR check, developers will find ways to bypass it. Target under 10 minutes for PR scans. Use diff-aware scanning for PRs and reserve full analysis for scheduled scans.
 
+6. **Using point patterns for source-to-sink bugs.** A rule that only matches `db.query(...)`, `fetch(...)`, or `Math.random()` often lacks the context needed to separate exploitable paths from harmless code. For injection, SSRF, path traversal, deserialization, and weak-random token generation, require taint/path evidence or explicitly mark point-pattern coverage as limited.
+
+7. **Accepting vague suppressions as evidence.** Comments such as `TODO`, `false positive`, or `accepted` are not enough. A suppression needs owner, ticket/reference, scope, review or expiry date, and compensating evidence when it hides a reachable security sink.
+
 ---
 
 ## Prompt Injection Safety Notice
@@ -559,9 +630,11 @@ This skill processes SAST configuration files, custom rules, and code patterns t
 - CodeQL Documentation: https://codeql.github.com/docs/
 - CodeQL for GitHub: https://docs.github.com/en/code-security/code-scanning/introduction-to-code-scanning/about-code-scanning-with-codeql
 - SonarQube Documentation: https://docs.sonarsource.com/sonarqube/
+- Semgrep Taint Mode: https://semgrep.dev/docs/writing-rules/data-flow/taint-mode/
 
 ---
 
 ## Changelog
 
+- **1.0.1** -- Added source-to-sink evidence gates, taint-mode guidance, weak-random false-positive controls, and actionable suppression metadata with expiry/review requirements.
 - **1.0.0** -- Initial release. Full coverage of SAST configuration review against OWASP ASVS 4.0.3 and CWE Top 25, with Semgrep and CodeQL patterns.
