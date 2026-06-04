@@ -13,7 +13,7 @@ phase: [operate]
 frameworks: [NIST-SP-800-81-Rev2, CIS-Controls-v8]
 difficulty: intermediate
 time_estimate: "20-40min"
-version: "1.0.0"
+version: "1.0.1"
 author: unitoneai
 license: MIT
 allowed-tools: Read, Grep, Glob
@@ -110,6 +110,8 @@ For each authoritative zone, verify:
   - ZSK rotation occurs at defined intervals (NIST recommends ZSK rotation every 1-3 months).
 - **DS record in parent:** A DS record matching the KSK is published in the parent zone.
 - **NSEC vs. NSEC3:** NSEC3 is preferred to prevent zone enumeration (NIST SP 800-81 Rev 2 Section 4.4).
+- **Parent-child chain validation:** DS records from the parent match currently published child DNSKEY material by key tag, algorithm, digest type, and digest value.
+- **Rollover state:** Planned KSK/ZSK rollovers record phase, TTL hold-down, rollback owner, and parent update evidence before old keys are removed.
 
 **Patterns to check in zone files:**
 
@@ -119,11 +121,49 @@ RRSIG
 DNSKEY
 NSEC3PARAM
 DS
+CDS
+CDNSKEY
 
 # BIND signing configuration
 dnssec-policy
 auto-dnssec maintain
 inline-signing yes
+```
+
+#### 2.1.1 Parent-Child Chain and Rollover Evidence
+
+Presence checks are not enough for DNSSEC. A zone can contain DNSKEY records and a parent can contain DS records while validators still fail because the DS points to an old KSK, uses the wrong digest, or was removed before TTL hold-down completed. During planned rollovers, dual KSKs or dual DS records can be valid when the phase and timing evidence are documented.
+
+For each signed public zone, record:
+
+| Field | Evidence |
+|-------|----------|
+| Child DNSKEY key tag | Key tag for each active KSK and ZSK. |
+| Child DNSKEY algorithm | Algorithm number for each key; flag weak or unexpected algorithms. |
+| Parent DS key tag | Key tag published by the parent or registrar. |
+| Parent DS digest type/value | Digest type and digest value; verify it matches the child KSK. |
+| Validation command | `delv +dnssec`, DNSViz result, or equivalent resolver validation evidence. |
+| Rollover phase | none / pre-publish / parent update / hold-down / old-key removal / emergency. |
+| TTL hold-down evidence | Parent and child TTLs observed before removing old DS/DNSKEY material. |
+| Rollback owner | Named owner or change ticket for failed rollover recovery. |
+| Automation status | CDS/CDNSKEY enabled, parent accepted update, or manual registrar action required. |
+
+**Review rules:**
+
+- [ ] Do not mark DNSSEC healthy based only on DS and DNSKEY presence; verify the parent DS matches a published child KSK.
+- [ ] Treat parent DS pointing to a removed child KSK as **Critical** because validating resolvers will fail.
+- [ ] Treat mismatched DS digest, digest type, key tag, or algorithm as **Critical** unless the mismatch is a documented transient emergency state with rollback evidence.
+- [ ] Do not flag dual DS or dual KSK records during a documented rollover window when both old and new chains validate and TTL hold-down is observed.
+- [ ] If CDS/CDNSKEY automation is used, require evidence that the registrar or parent zone accepted and published the change.
+- [ ] For split-horizon DNS, distinguish public chain-of-trust validation from internal resolver policy and unsigned internal-only zones.
+
+**Command patterns to look for in evidence:**
+
+```bash
+delv +dnssec example.com
+dig +dnssec DNSKEY example.com
+dig DS example.com @<parent-nameserver>
+dnssec-dsfromkey -2 Kexample.com.+013+12345.key
 ```
 
 **Finding classification:** Unsigned authoritative zones for public-facing domains are **High**. Weak signing algorithms (RSA < 2048-bit, SHA-1) are **High**. Missing DS record in parent (broken chain of trust) is **Critical**.
@@ -298,9 +338,9 @@ abcdef0123456789.dnscat.example.com TXT
 
 | Severity | Definition |
 |----------|-----------|
-| **Critical** | Broken DNSSEC chain of trust (missing DS record in parent); authoritative zones serving invalid signatures. |
-| **High** | DNSSEC validation disabled on resolvers; no DNS filtering/RPZ; unsigned public authoritative zones; DNS bypass paths around protective DNS; no DNS query logging; weak signing algorithms. |
-| **Medium** | Plaintext DNS forwarding over untrusted networks; stale RPZ feeds; undocumented NTAs; no NRD blocking; no exfiltration detection; DoH bypass not controlled. |
+| **Critical** | Broken DNSSEC chain of trust (missing DS record in parent, parent DS points to removed child KSK, DS/DNSKEY digest or algorithm mismatch); authoritative zones serving invalid signatures. |
+| **High** | DNSSEC validation disabled on resolvers; no DNS filtering/RPZ; unsigned public authoritative zones; DNS bypass paths around protective DNS; no DNS query logging; weak signing algorithms; undocumented KSK rollover removing old keys before TTL hold-down. |
+| **Medium** | Plaintext DNS forwarding over untrusted networks; stale RPZ feeds; undocumented NTAs; no NRD blocking; no exfiltration detection; DoH bypass not controlled; rollover phase or rollback owner missing while dual DS/KSK records are present. |
 | **Low** | Missing documentation of DNS architecture; resolver software not at latest version; cosmetic configuration issues. |
 
 ---
@@ -318,9 +358,15 @@ abcdef0123456789.dnscat.example.com TXT
 
 ### DNSSEC Status
 
-| Zone | Signed | Algorithm | Key Sizes | DS in Parent | NSEC Version | Status |
-|------|--------|-----------|-----------|--------------|-------------|--------|
-| example.com | Yes/No | 13/8/15 | KSK:2048/ZSK:1024 | Yes/No | NSEC3 | Pass/Fail |
+| Zone | Signed | Algorithm | Key Sizes | Parent DS Match | Rollover Phase | NSEC Version | Status |
+|------|--------|-----------|-----------|-----------------|----------------|--------------|--------|
+| example.com | Yes/No | 13/8/15 | KSK:2048/ZSK:1024 | Match/Mismatch/Missing | none/pre-publish/hold-down | NSEC3 | Pass/Fail |
+
+### DNSSEC Chain Evidence
+
+| Zone | Child KSK Tag | Parent DS Tag | Digest Type | Digest Match | Validation Evidence | TTL Hold-down | Rollback Owner |
+|------|---------------|---------------|-------------|--------------|---------------------|---------------|----------------|
+| example.com | 12345 | 12345 | 2 | Yes | delv/DNSViz pass | Observed | dns-owner@example.com |
 
 ### Resolver Security
 
@@ -378,11 +424,15 @@ abcdef0123456789.dnscat.example.com TXT
 
 1. **Deploying DNSSEC zone signing without publishing the DS record in the parent zone.** The zone is signed but validation fails because the chain of trust is broken. Always verify the DS record is published and matches the KSK by querying the parent zone's nameservers.
 
-2. **Blocking DoH at the network level without deploying enterprise DoT/DoH.** If you block public DoH endpoints to enforce corporate DNS policy, you must provide a corporate encrypted DNS alternative. Otherwise, you degrade client DNS security without improving organizational visibility.
+2. **Treating dual DNSKEY or dual DS records as a failure during planned rollover.** Multiple KSKs or DS records can be correct during pre-publish and hold-down phases. Require rollover phase, TTL, and validation evidence before flagging drift.
 
-3. **Relying solely on domain reputation lists for exfiltration detection.** Attackers use attacker-controlled domains that are not yet categorized. Behavioral detection (entropy, volume, query type anomalies) catches novel exfiltration domains that reputation feeds miss.
+3. **Removing old KSK material before the parent DS cache ages out.** A rushed rollover can break validating resolvers intermittently even when a spot check passes. Verify parent and child TTL timing and rollback ownership.
 
-4. **Ignoring DNS over TCP.** DNS is not UDP-only. DNS over TCP (port 53) supports large responses and is required for zone transfers. Some tunneling tools prefer TCP for reliability. Firewall rules and monitoring must cover both UDP and TCP port 53.
+4. **Blocking DoH at the network level without deploying enterprise DoT/DoH.** If you block public DoH endpoints to enforce corporate DNS policy, you must provide a corporate encrypted DNS alternative. Otherwise, you degrade client DNS security without improving organizational visibility.
+
+5. **Relying solely on domain reputation lists for exfiltration detection.** Attackers use attacker-controlled domains that are not yet categorized. Behavioral detection (entropy, volume, query type anomalies) catches novel exfiltration domains that reputation feeds miss.
+
+6. **Ignoring DNS over TCP.** DNS is not UDP-only. DNS over TCP (port 53) supports large responses and is required for zone transfers. Some tunneling tools prefer TCP for reliability. Firewall rules and monitoring must cover both UDP and TCP port 53.
 
 ---
 
@@ -403,6 +453,9 @@ This skill processes DNS configuration files that may contain user-supplied zone
 - NIST SP 800-81 Rev 2 (PDF): https://nvlpubs.nist.gov/nistpubs/SpecialPublications/NIST.SP.800-81-2.pdf
 - CIS Controls v8: https://www.cisecurity.org/controls/v8
 - RFC 4033 -- DNS Security Introduction and Requirements: https://datatracker.ietf.org/doc/html/rfc4033
+- RFC 4034 -- Resource Records for DNSSEC: https://datatracker.ietf.org/doc/html/rfc4034
+- RFC 6781 -- DNSSEC Operational Practices, Version 2: https://datatracker.ietf.org/doc/html/rfc6781
+- RFC 8078 -- Managing DS Records from the Parent via CDS/CDNSKEY: https://datatracker.ietf.org/doc/html/rfc8078
 - RFC 7858 -- DNS over TLS: https://datatracker.ietf.org/doc/html/rfc7858
 - RFC 8484 -- DNS over HTTPS: https://datatracker.ietf.org/doc/html/rfc8484
 - RFC 7719 -- DNS Terminology: https://datatracker.ietf.org/doc/html/rfc7719
@@ -413,4 +466,5 @@ This skill processes DNS configuration files that may contain user-supplied zone
 
 ## Changelog
 
+- **1.0.1** -- Added DNSSEC parent-child DS/DNSKEY validation, rollover phase evidence, TTL hold-down, and CDS/CDNSKEY automation checks.
 - **1.0.0** -- Initial release. Full coverage of NIST SP 800-81 Rev 2 and CIS Controls v8 Control 9.2 for DNS security review.
