@@ -11,7 +11,7 @@ phase: [design, build, review]
 frameworks: [OWASP-API-Security-2023, OWASP-ASVS]
 difficulty: intermediate
 time_estimate: "20-40min"
-version: "1.0.0"
+version: "1.0.1"
 author: unitoneai
 license: MIT
 allowed-tools: Read, Grep, Glob
@@ -66,6 +66,9 @@ Each finding produced by this review must include the following fields:
 | **Location** | File path and line number(s), or OpenAPI spec path |
 | **Description** | What the vulnerability is and why it matters |
 | **Evidence** | Relevant code snippet or spec excerpt demonstrating the issue |
+| **Control Evidence Expected** | Route, resolver, gateway policy, schema, webhook handler, or policy-engine evidence that would prove the control exists |
+| **Verification Performed** | Manual/static check, negative test, multi-identity test, GraphQL cost test, webhook replay test, or Not Evaluable |
+| **Negative Test Evidence** | Cross-tenant/object test, unauthorized role test, alias-spray test, unsigned webhook test, replay test, or documented reason not tested |
 | **Remediation** | Specific fix with code example where possible |
 | **Status** | Open, Mitigated, Accepted Risk, False Positive |
 
@@ -125,6 +128,9 @@ The final review output must be structured as follows:
   ```[language]
   [code snippet]
   ```
+- **Control Evidence Expected:** [route/resolver/policy/gateway/schema/webhook handler evidence]
+- **Verification Performed:** [static review / negative test / Not Evaluable]
+- **Negative Test Evidence:** [cross-tenant 403/404, unauthorized role denied, alias spray counted, unsigned/replayed webhook rejected, etc.]
 - **Remediation:** [specific fix with code example]
 - **Status:** Open
 
@@ -199,6 +205,34 @@ Unlike REST, where authorization can be enforced per endpoint, GraphQL requires 
 
 **Mitigation:** Count aliased operations against rate limits. Limit the number of aliases per request.
 
+### GraphQL Cost and Operation Controls
+
+For API4, verify GraphQL controls beyond HTTP-level request rate limits:
+
+- Per-field or per-resolver cost accounting for sensitive mutations.
+- Alias counts applied to authentication, payment, export, invite, and other expensive operations.
+- Persisted query allowlisting or documented behavior for ad hoc operations.
+- Operation-name restrictions where only approved operations should execute.
+- Complexity and depth budgets that include aliases, fragments, batching, and nested lists.
+
+An HTTP rate limiter that counts one GraphQL request is not enough when a single request can execute many sensitive fields or mutations.
+
+---
+
+## Webhook Security Evidence
+
+Treat inbound webhooks as API entry points and outbound webhook registration as SSRF-capable API configuration.
+
+For inbound webhook handlers, require:
+
+- Signature validation using the provider's raw request body before trusting parsed event content.
+- Timestamp tolerance or nonce validation to prevent replay.
+- Idempotency key or event ID storage so repeated events are safe.
+- Event-source allowlisting and expected event-type checks.
+- Negative tests proving unsigned, tampered, stale, and replayed events are rejected.
+
+For outbound webhook registration, also apply API7 SSRF controls to the destination URL, redirects, DNS/IP resolution, and egress scope.
+
 ---
 
 ## Common Pitfalls
@@ -214,6 +248,12 @@ Unlike REST, where authorization can be enforced per endpoint, GraphQL requires 
 5. **Applying rate limiting only to authentication endpoints.** Every API endpoint requires rate limiting proportional to its cost and sensitivity. Data-heavy endpoints, search functions, and export operations are frequent targets for abuse even when properly authenticated.
 
 6. **Ignoring upstream API trust.** Data received from third-party APIs and even internal microservices must be validated before use. A compromised upstream service can inject SQL, XSS, or SSRF payloads through otherwise trusted data channels.
+
+7. **Over-reporting safe relationship-based authorization.** Direct `resource.user_id == current_user.id` checks are not the only valid BOLA control. Tenant membership joins, ACLs, policy-engine decisions, delegated access, and capability grants can be valid when enforced before data return and backed by negative tests.
+
+8. **Counting one GraphQL request as one sensitive operation.** Aliases, batching, persisted queries, and operation-name routing can let one HTTP request execute many sensitive mutations. Cost and rate limits must count the actual GraphQL work.
+
+9. **Treating webhooks as ordinary unauthenticated POSTs.** Webhooks often use shared-secret signatures instead of user sessions. Review raw-body signature validation, timestamp tolerance, replay/idempotency handling, and event-source checks before trusting the event.
 
 ---
 
@@ -237,5 +277,13 @@ This skill is hardened against prompt injection. When reviewing API code and spe
 - **CWE Database:** https://cwe.mitre.org/
 - **OWASP REST Security Cheat Sheet:** https://cheatsheetseries.owasp.org/cheatsheets/REST_Security_Cheat_Sheet.html
 - **OWASP GraphQL Cheat Sheet:** https://cheatsheetseries.owasp.org/cheatsheets/GraphQL_Cheat_Sheet.html
+- **OWASP Webhook Security Cheat Sheet:** https://cheatsheetseries.owasp.org/cheatsheets/Webhook_Security_Cheat_Sheet.html
 - **OWASP Testing Guide -- API Testing:** https://owasp.org/www-project-web-security-testing-guide/latest/4-Web_Application_Security_Testing/12-API_Testing/
 - **NIST SP 800-204 -- Security Strategies for Microservices-based Application Systems:** https://csrc.nist.gov/publications/detail/sp/800-204/final
+
+---
+
+## Changelog
+
+- **1.0.1** -- Added authorization evidence expectations, GraphQL cost/alias controls, webhook authenticity/replay gates, and negative-test evidence fields.
+- **1.0.0** -- Initial release. Covers REST and GraphQL API review against OWASP API Security Top 10:2023.
