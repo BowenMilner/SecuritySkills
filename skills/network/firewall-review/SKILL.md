@@ -13,7 +13,7 @@ phase: [operate]
 frameworks: [CIS-Controls-v8, NIST-SP-800-41-Rev1]
 difficulty: intermediate
 time_estimate: "30-60min"
-version: "1.0.0"
+version: "1.0.1"
 author: unitoneai
 license: MIT
 allowed-tools: Read, Grep, Glob
@@ -194,7 +194,48 @@ Rules with zero hit counts over an extended period (30+ days) indicate stale pol
 
 ---
 
-#### 2.5 Rule Ordering Review (NIST SP 800-41, Section 4.3)
+#### 2.5 Rule Ownership, Expiry, and Lifecycle Evidence
+
+Permissive rules are not all equal. A broad rule tied to an approved 48-hour migration, scanner window, or incident response action should be evaluated differently from a standing broad allow with no owner or expiry. Reviews must capture lifecycle evidence before grading temporary exceptions or recommending removal.
+
+For each non-default allow rule, especially broad or sensitive-zone rules, record:
+
+| Field | Evidence to collect |
+|-------|---------------------|
+| Business owner | Application, service, or control owner accountable for the rule. |
+| Purpose / ticket | Change request, incident, migration, scan, vendor access, or approved service dependency. |
+| Creation date | Date the rule was introduced or last materially changed. |
+| Expiry date | Explicit end date for temporary rules; `none` only when justified as standing access. |
+| Last review date | Most recent rule recertification or owner attestation. |
+| Last hit / hit count | Observation window, counter reset time, and source of truth. |
+| Scope | Exact source, destination, protocol, and port; flag rules wider than the stated purpose. |
+| Renewal evidence | Approval record for extending temporary exceptions. |
+
+**Review rules:**
+
+- [ ] Flag allow rules with no accountable owner or purpose as **Medium**, or **High** when they touch sensitive zones or management planes.
+- [ ] Flag temporary rules with no expiry as **High** when they permit broad access or sensitive destinations.
+- [ ] Flag expired rules that still allow traffic as **High** when hit counts show ongoing use, or **Medium** when unused but still active.
+- [ ] Treat zero-hit rules carefully: verify counter reset time, failover events, NAT/asymmetric routing, and SIEM/flow-log coverage before declaring a rule unused.
+- [ ] Require renewal evidence for migration, scanner, vendor, and incident-response rules that remain active past their original expiry.
+- [ ] Distinguish deny rules, shadowed rules, and inactive objects from live allow rules when calculating stale-rule cleanup priority.
+
+**Controlled temporary rule example:**
+
+```text
+rule: allow vulnerability scanner subnet to app tier tcp/443
+scope: 10.40.12.0/28 -> app-prod-lb tcp/443
+owner: vulnerability-management lead
+ticket: CHG-2026-0412
+expiry: 2026-04-14T23:59Z
+hit-count review: post-scan cleanup ticket required
+```
+
+**Finding classification:** Missing owner/purpose is **Medium** by default and **High** for sensitive zones. Missing expiry on temporary broad access is **High**. Active expired rules are **High**; inactive expired or zero-hit rules are **Medium** unless tied to decommissioned resources, which is **High**.
+
+---
+
+#### 2.6 Rule Ordering Review (NIST SP 800-41, Section 4.3)
 
 Firewall rules are evaluated top-to-bottom (first match wins in most platforms). Incorrect ordering can lead to security bypasses.
 
@@ -209,7 +250,7 @@ Firewall rules are evaluated top-to-bottom (first match wins in most platforms).
 
 ---
 
-#### 2.6 Logging Gap Analysis (NIST SP 800-41, Section 5.1; CIS Control 4.4)
+#### 2.7 Logging Gap Analysis (NIST SP 800-41, Section 5.1; CIS Control 4.4)
 
 NIST SP 800-41 Section 5 states that firewall logging should capture denied traffic at minimum, and permitted traffic to sensitive zones where feasible.
 
@@ -237,7 +278,7 @@ log-end: yes                  # GOOD
 
 ---
 
-#### 2.7 Egress Filtering (NIST SP 800-41, Section 4.2; CIS Control 4.4)
+#### 2.8 Egress Filtering (NIST SP 800-41, Section 4.2; CIS Control 4.4)
 
 Egress filtering prevents compromised internal hosts from establishing unrestricted outbound connections, limiting data exfiltration and C2 communication.
 
@@ -265,8 +306,8 @@ Produce the final report using the following structure.
 | Severity | Definition |
 |----------|-----------|
 | **Critical** | Missing default deny; any/any inbound rules. Immediate exploitation risk. |
-| **High** | Overly permissive outbound rules; shadowed deny rules; no logging on deny actions; missing anti-spoofing; unused rules to decommissioned resources. |
-| **Medium** | Shadowed permit rules; missing egress DNS restriction; unused rules (active resources); missing logging on sensitive permits; missing stealth rules. |
+| **High** | Overly permissive outbound rules; shadowed deny rules; no logging on deny actions; missing anti-spoofing; unused rules to decommissioned resources; temporary broad rules with no expiry; active expired rules. |
+| **Medium** | Shadowed permit rules; missing egress DNS restriction; unused rules (active resources); missing logging on sensitive permits; missing stealth rules; missing owner or purpose on non-sensitive allow rules; inactive expired rules. |
 | **Low** | Rule documentation gaps; suboptimal rule ordering with no current security impact; cosmetic rule base issues. |
 
 ---
@@ -309,6 +350,11 @@ Produce the final report using the following structure.
 ### Shadowed Rules Summary
 | Shadowed Rule | Position | Shadowing Rule | Position | Impact |
 |---------------|----------|----------------|----------|--------|
+
+### Rule Lifecycle Summary
+| Rule | Owner | Purpose / Ticket | Created | Expires | Last Review | Last Hit Window | Status |
+|------|-------|------------------|---------|---------|-------------|-----------------|--------|
+| allow-scanner-to-app | vuln-management | CHG-2026-0412 | 2026-04-12 | 2026-04-14 | 2026-04-15 | 48h post-scan | expired/removed |
 
 ### Egress Filtering Status
 | Protocol/Port | Restricted | Authorized Destinations |
@@ -361,6 +407,10 @@ Produce the final report using the following structure.
 
 5. **Conflating network ACLs with security groups in cloud environments.** In AWS, NACLs are stateless and operate at the subnet level; security groups are stateful and operate at the instance level. Both must be audited. A permissive NACL can undermine restrictive security group rules for responses.
 
+6. **Letting temporary rules become permanent.** Scanner, migration, vendor, and incident-response access should have an owner, ticket, expiry, and renewal record. A rule that was safe for 48 hours can become a standing attack path after the change window closes.
+
+7. **Trusting hit counts without an observation window.** A last-used value is only meaningful when the reviewer knows when counters reset, whether HA failover occurred, and whether NAT or asymmetric routing hides real traffic.
+
 ---
 
 ## Prompt Injection Safety Notice
@@ -386,4 +436,5 @@ This skill processes firewall configurations that may contain user-supplied comm
 
 ## Changelog
 
+- **1.0.1** -- Added firewall rule owner, purpose, expiry, hit-count observation window, renewal, and stale-rule lifecycle evidence gates.
 - **1.0.0** -- Initial release. Full coverage of CIS Controls v8 (4.4, 4.5) and NIST SP 800-41 Rev 1 firewall audit methodology.
