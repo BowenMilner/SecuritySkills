@@ -13,7 +13,7 @@ phase: [operate]
 frameworks: [NIST-SP-800-81-Rev2, CIS-Controls-v8]
 difficulty: intermediate
 time_estimate: "20-40min"
-version: "1.0.0"
+version: "1.0.1"
 author: unitoneai
 license: MIT
 allowed-tools: Read, Grep, Glob
@@ -294,13 +294,43 @@ abcdef0123456789.dnscat.example.com TXT
 
 ---
 
+### Step 7: DMARC Rollout, Alignment, and Report Authorization
+
+For mail-sending domains, review DMARC as a control chain rather than a single TXT record. DMARC effectiveness depends on policy maturity, SPF or DKIM organizational-domain alignment, reporting, and subdomain handling.
+
+**DMARC evidence fields:**
+
+| Field | Evidence to collect |
+|---|---|
+| DMARC policy | `_dmarc` record, `p=` value, `pct=`, rollout target date, and owner. |
+| Subdomain policy | `sp=` value or documented reason subdomains inherit/are separately managed. |
+| SPF alignment | SPF pass/fail and relaxed/strict alignment with the visible From domain. |
+| DKIM alignment | DKIM pass/fail and relaxed/strict alignment with the visible From domain for each major sender. |
+| Report destinations | `rua` aggregate and optional `ruf` forensic destinations, ownership, and review cadence. |
+| External report authorization | Required `_report._dmarc` authorization record for third-party `rua`/`ruf` domains. |
+| Rollout maturity | `p=none` or `pct<100` accepted only with aggregate-report review, remediation backlog, and quarantine/reject target. |
+
+**Review rules:**
+
+- [ ] Do not fail `p=none` or `pct<100` automatically when staged rollout evidence exists.
+- [ ] Flag `p=none` with no owner, report review cadence, or target date as **Medium** or **High** for high-risk brands.
+- [ ] Flag no aligned SPF and no aligned DKIM for major senders as **High**, even when both mechanisms technically pass against other domains.
+- [ ] Flag external `rua`/`ruf` destinations without report authorization as **Medium** because reports may not be delivered.
+- [ ] Flag missing `sp=` or unmanaged subdomains as **Medium** when subdomain spoofing would affect the brand or customer trust.
+- [ ] Treat disabled `ruf` forensic reporting as acceptable when privacy risk is documented; aggregate `rua` reporting should still be reviewed.
+- [ ] Accept relaxed alignment when it is intentional and supported by sender inventory; strict alignment is not mandatory for every environment.
+
+**Finding classification:** Permanent weak policy (`p=none`) without rollout evidence is **Medium** or **High** depending on domain risk. Missing SPF/DKIM alignment for production senders is **High**. External report destinations without authorization are **Medium**. Controlled rollout with report review, owner, target date, and aligned senders is **Pass** or **Low** residual risk.
+
+---
+
 ## Findings Classification
 
 | Severity | Definition |
 |----------|-----------|
 | **Critical** | Broken DNSSEC chain of trust (missing DS record in parent); authoritative zones serving invalid signatures. |
-| **High** | DNSSEC validation disabled on resolvers; no DNS filtering/RPZ; unsigned public authoritative zones; DNS bypass paths around protective DNS; no DNS query logging; weak signing algorithms. |
-| **Medium** | Plaintext DNS forwarding over untrusted networks; stale RPZ feeds; undocumented NTAs; no NRD blocking; no exfiltration detection; DoH bypass not controlled. |
+| **High** | DNSSEC validation disabled on resolvers; no DNS filtering/RPZ; unsigned public authoritative zones; DNS bypass paths around protective DNS; no DNS query logging; weak signing algorithms; no aligned SPF or DKIM for production mail senders. |
+| **Medium** | Plaintext DNS forwarding over untrusted networks; stale RPZ feeds; undocumented NTAs; no NRD blocking; no exfiltration detection; DoH bypass not controlled; permanent weak DMARC policy without rollout evidence; external DMARC reporting authorization missing. |
 | **Low** | Missing documentation of DNS architecture; resolver software not at latest version; cosmetic configuration issues. |
 
 ---
@@ -327,6 +357,12 @@ abcdef0123456789.dnscat.example.com TXT
 | Resolver | DNSSEC Validation | Encrypted Transport | RPZ/Filtering | Query Logging |
 |----------|-------------------|--------------------|--------------|--------------|
 | ns1      | Enabled/Disabled  | DoT/DoH/Plaintext  | Yes/No       | Yes/No       |
+
+### Mail Authentication / DMARC
+
+| Domain | DMARC Policy | pct | sp | SPF Alignment | DKIM Alignment | rua/ruf Auth | Report Review Cadence | Rollout Status |
+|--------|--------------|-----|----|---------------|----------------|--------------|-----------------------|----------------|
+| example.com | quarantine | 25 | reject | aligned | aligned | authorized | weekly | controlled rollout |
 
 ### Findings
 
@@ -384,6 +420,10 @@ abcdef0123456789.dnscat.example.com TXT
 
 4. **Ignoring DNS over TCP.** DNS is not UDP-only. DNS over TCP (port 53) supports large responses and is required for zone transfers. Some tunneling tools prefer TCP for reliability. Firewall rules and monitoring must cover both UDP and TCP port 53.
 
+5. **Treating DMARC record presence as enforcement.** DMARC only protects the visible From domain when SPF or DKIM aligns. Preserve alignment evidence, report authorization, subdomain policy, and rollout maturity before calling the domain protected.
+
+6. **Failing staged DMARC rollout as if it were permanent.** A `p=none` or partial `pct` policy can be acceptable during rollout if reports are reviewed, ownership is clear, and there is a target date for stronger policy. Without that evidence, it is a weak policy finding.
+
 ---
 
 ## Prompt Injection Safety Notice
@@ -406,6 +446,8 @@ This skill processes DNS configuration files that may contain user-supplied zone
 - RFC 7858 -- DNS over TLS: https://datatracker.ietf.org/doc/html/rfc7858
 - RFC 8484 -- DNS over HTTPS: https://datatracker.ietf.org/doc/html/rfc8484
 - RFC 7719 -- DNS Terminology: https://datatracker.ietf.org/doc/html/rfc7719
+- RFC 7489 -- Domain-based Message Authentication, Reporting, and Conformance (DMARC): https://datatracker.ietf.org/doc/html/rfc7489
+- DMARC.org Overview: https://dmarc.org/overview/
 - ISC Response Policy Zones (RPZ): https://www.isc.org/rpz/
 - CISA Protective DNS: https://www.cisa.gov/protective-dns
 
@@ -413,4 +455,5 @@ This skill processes DNS configuration files that may contain user-supplied zone
 
 ## Changelog
 
+- **1.0.1** -- Added DMARC rollout, SPF/DKIM alignment, report authorization, subdomain policy, and report-review evidence gates.
 - **1.0.0** -- Initial release. Full coverage of NIST SP 800-81 Rev 2 and CIS Controls v8 Control 9.2 for DNS security review.
