@@ -14,7 +14,7 @@ phase: [design, build, review]
 frameworks: [OWASP-Agentic-AI, NIST-AI-RMF-1.0]
 difficulty: advanced
 time_estimate: "60-120min"
-version: "1.0.2"
+version: "1.0.3"
 author: unitoneai
 license: MIT
 allowed-tools: Read, Grep, Glob
@@ -291,35 +291,43 @@ Evaluate the architectural controls that limit the damage when an agent is compr
 
 ---
 
-### Step 5 -- Audit Trail Completeness
+### Step 5 -- Secret-Aware Audit Trail Completeness
 
-Evaluate whether the audit logging for agent actions is sufficient for incident investigation, compliance, and forensic analysis.
+Evaluate whether the audit logging for agent actions is sufficient for incident investigation, compliance, and forensic analysis without turning the log pipeline into a second store for secrets, regulated data, prompts, or raw tool payloads. Audit events should support reconstruction and accountability through safe metadata, bounded summaries, hashes, policy decisions, and protected evidence references.
 
 **What to look for in code and configuration:**
 
-- **Action logging:** Is every tool invocation logged with: agent identity, timestamp, tool name, full input parameters, output result, session/correlation ID, and the user or trigger that initiated the workflow?
-- **Decision logging:** Is the agent's reasoning captured? For compliance-sensitive decisions, logging only the action without the reasoning makes it impossible to audit why the agent acted as it did.
-- **Prompt/context logging:** Is the prompt (or a hash/summary of it) logged for correlation? Can investigators reconstruct what the agent "saw" when it made a decision?
+- **Action logging:** Is every tool invocation logged with: agent identity, timestamp, tool name, safe parameter schema, approved resource identifiers or parameter fingerprints, result status, session/correlation ID, and the user or trigger that initiated the workflow?
+- **Pre-ingestion redaction:** Are secret-bearing keys and sensitive values removed, masked, tokenized, hashed, or encrypted before they leave the application boundary for collectors, queues, exporters, SIEMs, or observability vendors?
+- **Decision logging:** Is the authorization/approval decision, policy/rule ID, model/tool version, and bounded rationale captured without logging chain-of-thought or unrestricted private reasoning?
+- **Prompt/context logging:** Is the prompt recorded as a hash, classification label, bounded summary, or protected evidence reference? Can investigators reconstruct enough context without placing raw prompts, retrieved documents, or tool results in ordinary searchable logs?
+- **Tool output logging:** Are result status, record counts, schema names, object IDs, and error classes logged instead of raw customer records, secrets, files, payments, health data, or returned payloads?
+- **Log injection protection:** Are user-controlled fields normalized or escaped so newline, delimiter, terminal-control, or structured-log-breaking characters cannot forge audit entries?
 - **Log integrity:** Are logs tamper-evident? Can the agent or an attacker who compromises the agent modify or delete its own audit trail?
 - **Log completeness:** Are there code paths where tool invocations occur but logging is skipped (e.g., in error handlers, retry logic, or fallback paths)?
 - **Log retention and access:** Are agent audit logs retained for the required compliance period? Are they accessible to security and compliance teams?
 - **Cross-agent correlation:** In multi-agent systems, can logs be correlated across agents to reconstruct the full action chain for a given workflow?
 
-**Detection methods:** Search for logging implementations (`logger`, `audit`, `emit`), per-invocation fields (`tool_name`, `tool_input`, `correlation_id`, `trace_id`), log integrity (`immutable`, `append_only`, `tamper`), decision logging (`reasoning`, `chain_of_thought`, `rationale`), and SIEM integration (`splunk`, `datadog`, `cloudwatch`, `elasticsearch`).
+**Detection methods:** Search for logging implementations (`logger`, `audit`, `emit`), per-invocation fields (`tool_name`, `tool_input`, `correlation_id`, `trace_id`), redaction/tokenization (`redact`, `mask`, `sanitize`, `classification`, `fingerprint`), sensitive keys (`authorization`, `cookie`, `api_key`, `token`, `password`, `secret`, `signed_url`), log integrity (`immutable`, `append_only`, `tamper`), decision logging (`policy_id`, `approval_id`, `rationale`, `chain_of_thought`), and SIEM integration (`splunk`, `datadog`, `cloudwatch`, `elasticsearch`).
 
-**Audit trail completeness checklist:**
+**Minimum safe audit event schema:**
 
 | Field | Required For | Common Gap |
 |---|---|---|
 | Agent identity (unique per instance) | Attribution -- which agent acted | All agents logged as "agent" or "system" |
 | Timestamp (UTC, millisecond precision) | Timeline reconstruction | Second-level precision insufficient for rapid action sequences |
-| Tool name and full parameters | Action reconstruction | Parameters truncated or omitted |
-| Tool output/result | Outcome verification | Only success/failure logged, not actual results |
+| Tool name and version | Action reconstruction | Generic "tool_call" without implementation or version |
+| Parameter keys, approved resource IDs, or fingerprints | Action reconstruction without raw secrets | Full values logged, or no safe reconstruction metadata |
+| Result status, count, schema, and error class | Outcome verification | Raw output copied into logs, or only success/failure logged |
 | Session/correlation ID | Workflow reconstruction | No correlation across multi-step agent workflows |
 | User/trigger identity | Authorization audit | Agent actions not linked to initiating user |
-| Prompt hash or summary | Context reconstruction | No record of what the agent was told to do |
-| Error details | Failure analysis | Errors caught and swallowed silently |
+| Prompt hash, classification, bounded summary, or evidence reference | Context reconstruction | Raw prompt logged by default, or no context handle |
+| Authorization/approval decision and policy ID | Oversight verification | No record of why the tool call was allowed |
+| Redaction policy/version | Privacy and repeatability | Logs cannot prove which redaction rules ran |
+| Error class and sanitized details | Failure analysis | Errors caught silently or stack traces leak secrets |
 | Approval decisions (if HITL) | Oversight verification | Approvals not logged or logged without the approver's identity |
+
+**Protected evidence exception:** If full request/response payloads are legally or operationally required for high-risk actions, they should be written to a separate evidence vault, not ordinary searchable logs. Require encryption, strict access control, purpose-bound access, retention limits, deletion workflow, and an audit-log reference ID. This exception should be explicit and rare.
 
 **NIST AI RMF mapping:** MANAGE 2.4 (mechanisms for tracking AI risks), MANAGE 4.1 (incident tracking and response), GOVERN 1.2 (roles and responsibilities documented through audit trails).
 
@@ -327,12 +335,18 @@ Evaluate whether the audit logging for agent actions is sufficient for incident 
 
 | Condition | Severity |
 |---|---|
-| Tool invocations not logged or logged without full parameters | Critical |
+| Tool invocations not logged at all, or no agent/user/correlation attribution for consequential actions | Critical |
+| Access tokens, cookies, API keys, passwords, signed URLs, payment data, health records, or full customer records copied into ordinary logs | Critical |
 | Agent can modify or delete its own audit trail | Critical |
+| Raw tool payloads, prompts, retrieved documents, or chain-of-thought logged by default without classification, redaction, or protected evidence controls | High |
+| Redaction occurs only after centralized ingestion, so collectors/exporters/vendors receive raw sensitive data | High |
 | No correlation ID to link multi-step agent workflows | High |
 | Agent actions not attributable to specific agent identity (shared identity) | High |
 | No log pipeline to SIEM or centralized log management | High |
-| Decision reasoning not logged for compliance-sensitive actions | Medium |
+| Sensitive user-controlled values are not sanitized against log injection or forged audit entries | High |
+| Parameter values omitted with no safe substitute such as approved resource ID, fingerprint, schema, count, or evidence reference | Medium |
+| Decision outcome, approval ID, policy ID, or bounded rationale missing for compliance-sensitive actions | Medium |
+| Redaction policy/version not recorded | Medium |
 | Audit logs not retained for required compliance period | Medium |
 | Error paths skip audit logging | Medium |
 | No monitoring or alerting on anomalous agent action patterns | Medium |
@@ -565,7 +579,7 @@ Glob: **/security_architecture*
 
 3. **Trusting agents because they are "internal."** In multi-agent architectures, teams often skip inter-agent authentication because "both agents are ours." This ignores the primary threat: one agent being compromised via prompt injection and then pivoting to other agents. Inter-agent trust must be authenticated and authorized even within a single organization's infrastructure. A compromised research agent should not be able to instruct an execution agent to deploy code.
 
-4. **Building audit trails that log actions but not context.** An audit log that records "Agent-A called write_file at 14:32:01" is useful for timeline reconstruction but insufficient for root cause analysis. Without logging what the agent was told (the prompt or task), what it reasoned (the chain of thought), and what it received from other agents or tools (the inputs), investigators cannot determine whether the action was legitimate, hallucinated, or injected. Log the full decision context for every consequential action.
+4. **Treating raw payload logging as audit completeness.** An audit log that records "Agent-A called write_file at 14:32:01" is insufficient, but copying full prompts, chain-of-thought, access tokens, tool parameters, and returned records into searchable logs creates a second sensitive-data store. Prefer hashes, bounded summaries, approved resource identifiers, field fingerprints, result counts, policy IDs, and protected evidence references. Full payload capture should be rare, encrypted, access-controlled, retention-limited, and separate from ordinary logs.
 
 5. **Assuming rollback is someone else's problem.** Agent developers frequently rely on downstream systems (databases, deployment platforms, email providers) to handle rollback without verifying that rollback mechanisms actually exist and work. A database transaction can be rolled back, but only if the agent's actions are wrapped in a transaction. An email cannot be recalled. A deployed binary cannot be un-deployed if the deployment pipeline has no rollback. For every tool an agent can invoke, the architecture must document the rollback mechanism and test it.
 
@@ -587,3 +601,5 @@ Glob: **/security_architecture*
 12. Sequential Tool Attack Chains and Context Amnesia in Agentic AI (2026) -- arXiv:2603.12644
 13. Confused-Deputy Attacks and Cascading Failures in Long-Horizon Agent Workflows (2026) -- arXiv:2603.12230
 14. fabraix/playground -- Open-source AI agent red-team exploit library for validating agent permission boundaries and tool-use attack surface -- https://github.com/fabraix/playground
+15. OWASP Logging Cheat Sheet -- Sensitive data should be removed, masked, sanitized, hashed, or encrypted before logging -- https://cheatsheetseries.owasp.org/cheatsheets/Logging_Cheat_Sheet.html
+16. OWASP Top 10 for LLM Applications 2025 -- LLM06 Sensitive Information Disclosure -- https://genai.owasp.org/llm06/
