@@ -13,7 +13,7 @@ phase: [design, operate]
 frameworks: [NIST-SP-800-63B, NIST-SP-800-207, CIS-Controls-v8]
 difficulty: intermediate
 time_estimate: "30-60min"
-version: "1.0.0"
+version: "1.0.1"
 author: unitoneai
 license: MIT
 allowed-tools: Read, Grep, Glob
@@ -217,6 +217,8 @@ IAM-SVC-06: Service accounts without ownership assignment
 IAM-SVC-07: No inventory or lifecycle management for service accounts (CIS 5.5)
 IAM-SVC-08: Service account keys stored in plaintext (code, config files, environment variables)
 IAM-SVC-09: Service accounts without audit logging of usage
+IAM-SVC-10: Workload identity federation trust lacks scoped issuer, subject, audience, or attribute conditions
+IAM-SVC-11: Federated principal has downstream role binding broader than the trust claim scope
 ```
 
 **Platform-specific checks:**
@@ -236,6 +238,46 @@ IAM-SVC-09: Service accounts without audit logging of usage
 2. Short-lived tokens via OIDC/STS (time-bound, auto-expiring)
 3. Managed secrets with automatic rotation (Secrets Manager, Key Vault)
 4. User-managed keys with strict rotation policy (last resort)
+
+#### Workload Identity Federation Trust Review
+
+Keyless federation reduces static credential risk, but it is only safe when the external issuer, audience, subject, mapped attributes, and downstream role binding are constrained to the intended workload. Do not treat "no long-lived keys" as sufficient evidence by itself.
+
+**Review patterns:**
+
+```
+AssumeRoleWithWebIdentity
+oidc-provider
+:sub
+:aud
+federated identity credential
+issuer
+subject
+audiences
+allowed_audiences
+attribute_condition
+attribute_mapping
+principalSet://
+roles/iam.workloadIdentityUser
+```
+
+**Trust evidence matrix:**
+
+| Platform | Issuer / Provider | Subject / Claim Scope | Audience Check | Attribute / Condition Check | Downstream Principal Binding | Role Scope | Confidence |
+|---|---|---|---|---|---|---|---|
+| AWS | OIDC provider ARN | exact repo/branch/env or broad/unknown | `aud` scoped to STS | `sub` / provider controls | role trust policy | account/resource | strong/partial/not evaluable |
+| Azure | issuer URL | exact subject or broad/unknown | `api://AzureADTokenExchange` or approved audience | FIC subject/claims | managed identity or app role binding | subscription/resource | strong/partial/not evaluable |
+| GCP | workload identity provider URI | mapped subject/attributes | allowed audiences | attribute condition | subject/group/attribute/principalSet member | project/resource | strong/partial/not evaluable |
+
+**Finding guidance:**
+
+| Condition | Severity |
+|---|---|
+| Shared public IdP trust without subject or attribute restriction reaches production/admin roles | **High** |
+| Pool-wide, tenant-wide, or wildcard downstream principal binding grants high-privilege access | **High** or **Critical** depending on role scope |
+| Keyless federation present but issuer, subject, audience, or condition evidence is missing | **Not Evaluable** until evidence is supplied |
+| Exact trust scoping plus narrow downstream role/resource scope | Lower risk / acceptable |
+| Broad trust used only for read-only, non-production, time-bounded workflows | **Medium** or documented exception |
 
 ---
 
@@ -380,6 +422,7 @@ For each finding, produce a row with:
 | **Framework Ref** | NIST SP 800-63B section, NIST SP 800-207 tenet, or CIS Control ID |
 | **Affected Scope** | Accounts, roles, policies, or platforms impacted |
 | **Evidence** | Specific configuration, policy, or data supporting the finding |
+| **Trust Claim Evidence** | For federated machine identities: issuer/provider, subject or claim scope, audience, attributes/conditions, downstream binding, and role scope reviewed |
 | **Remediation** | Prioritized fix with implementation guidance |
 | **Effort** | Low (< 1 day) / Medium (1-5 days) / High (> 5 days) |
 
@@ -508,4 +551,17 @@ This skill processes user-supplied content including IAM policies, access config
 
 | Version | Date | Changes |
 |---|---|---|
+| 1.0.1 | 2026-06-04 | Added workload identity federation trust-claim review gates for AWS OIDC, Azure federated identity credentials, and GCP workload identity pools |
 | 1.0.0 | 2025-03-06 | Initial release |
+
+---
+
+## References
+
+- AWS IAM OIDC federation role creation: https://docs.aws.amazon.com/IAM/latest/UserGuide/id_roles_create_for-idp_oidc.html
+- AWS IAM identity-provider controls for shared OIDC providers: https://docs.aws.amazon.com/IAM/latest/UserGuide/id_roles_providers_oidc_secure-by-default.html
+- AWS IAM condition keys for OIDC federation: https://docs.aws.amazon.com/IAM/latest/UserGuide/reference_policies_iam-condition-keys.html
+- Azure federated identity credential CLI parameters: https://learn.microsoft.com/en-us/cli/azure/identity/federated-credential
+- Azure managed identity federated identity credential properties: https://learn.microsoft.com/en-us/rest/api/managedidentity/federated-identity-credentials/get
+- Google Cloud Workload Identity Federation: https://cloud.google.com/iam/docs/workload-identity-federation
+- Google Cloud Workload Identity Federation best practices: https://cloud.google.com/iam/docs/best-practices-for-using-workload-identity-federation
