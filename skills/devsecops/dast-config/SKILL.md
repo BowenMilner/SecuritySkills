@@ -12,7 +12,7 @@ phase: [build, deploy]
 frameworks: [OWASP-Top-10-2021, OWASP-Testing-Guide-v4.2]
 difficulty: intermediate
 time_estimate: "30-60min"
-version: "1.0.0"
+version: "1.0.1"
 author: unitoneai
 license: MIT
 allowed-tools: Read, Grep, Glob
@@ -331,9 +331,66 @@ env:
 
 ---
 
-### Step 5: CI/CD DAST Integration
+### Step 5: Traffic Shaping and Block Detection
 
-#### 5.1 Pipeline Integration Patterns
+Authenticated DAST is only meaningful if the scanner can keep reaching protected routes during spidering and active scan phases. A plan that logs in once but then receives `429 Too Many Requests`, CAPTCHA pages, WAF challenges, or account lockouts should be reported as partial coverage or not evaluable, not as a clean authenticated scan.
+
+#### 5.1 Evidence to Capture
+
+| Field | Evidence to collect |
+|-------|---------------------|
+| Scan user pool | Number and privilege level of DAST accounts; avoid a single shared account when active scans can trigger lockout. |
+| Lockout threshold known? | Yes / no / unknown, plus failed-login threshold and timed or administrator unlock path. |
+| Request shaping | Configured request rate, thread count, delay, or ZAP network rate-limit rule. |
+| `429` observed? | First affected route or phase, response count, and whether `Retry-After` or equivalent backoff was honored. |
+| CAPTCHA / anti-bot observed? | Page, response marker, or challenge endpoint that blocked authenticated coverage. |
+| WAF/CDN block signature observed? | 403/challenge body, bot-check redirect, vendor marker, or edge-generated response. |
+| Coverage result | `full`, `partial`, `blocked`, or `not evaluable`, with the affected route classes. |
+
+**Patterns to search in scan output, HAR files, logs, and reports:**
+
+```text
+429
+Retry-After
+rate limit
+too many requests
+captcha
+challenge
+cf-chl
+bot
+lockout
+account locked
+requests per second
+```
+
+#### 5.2 Review Rules
+
+- [ ] If `429`, CAPTCHA, or WAF challenge responses appear on protected flows, downgrade authenticated coverage to **partial** unless the report documents a slower scan profile and successful retry coverage.
+- [ ] If the DAST setup has only one account and the lockout/reset behavior is unknown, classify aggressive authenticated active scanning as a safety risk.
+- [ ] Distinguish application authorization failures from upstream rate limiting, WAF/CDN bot mitigation, CAPTCHA, and scanner misconfiguration.
+- [ ] Record which scan phase was affected: login, spider, AJAX spider, API import, active scan, or report generation.
+- [ ] Treat passive PR scans as useful baseline coverage, but do not equate them with full authenticated active coverage.
+
+**ZAP rate-limit example:**
+
+```yaml
+env:
+  parameters:
+    network:
+      rateLimitRules:
+        - description: "staging-app authenticated scan"
+          enabled: true
+          matchRegex: "https://staging\\.example\\.com/.*"
+          requestsPerSecond: 2
+```
+
+**Finding classification:** Authenticated scan blocked by CAPTCHA, WAF challenge, lockout, or persistent 429s is **High** when it hides protected routes. Unknown lockout/reset behavior for the only DAST account is **Medium**. Missing request-shaping evidence is **Medium** for active scans against rate-limited applications.
+
+---
+
+### Step 6: CI/CD DAST Integration
+
+#### 6.1 Pipeline Integration Patterns
 
 **GitHub Actions -- ZAP Baseline Scan (passive only, safe for every PR):**
 
@@ -408,9 +465,9 @@ jobs:
 
 ---
 
-### Step 6: Scan Scope Management
+### Step 7: Scan Scope Management
 
-#### 6.1 Scope Definition
+#### 7.1 Scope Definition
 
 Prevent DAST from scanning out-of-scope targets (third-party services, production, other tenants).
 
@@ -440,9 +497,9 @@ excludePaths:
 
 ---
 
-### Step 7: Results Deduplication and Triage
+### Step 8: Results Deduplication and Triage
 
-#### 7.1 Deduplication Strategy
+#### 8.1 Deduplication Strategy
 
 DAST tools report findings per-URL, producing hundreds of duplicate alerts for the same underlying issue.
 
@@ -482,8 +539,8 @@ DAST tools report findings per-URL, producing hundreds of duplicate alerts for t
 | Severity | Definition |
 |----------|-----------|
 | **Critical** | No authenticated scanning; active scanning targeting production; injection scan rules disabled; no scope restrictions. |
-| **High** | No DAST in CI/CD; no API scanning for API endpoints; active scanning disabled entirely; hardcoded credentials in config; destructive endpoints not excluded; authentication verification absent. |
-| **Medium** | No passive scanning on PRs; no scheduled full scan; OpenAPI spec out of date; no triage workflow; no deduplication; ZAP action unpinned; missing GraphQL scanning; missing security header rules. |
+| **High** | No DAST in CI/CD; no API scanning for API endpoints; active scanning disabled entirely; hardcoded credentials in config; destructive endpoints not excluded; authentication verification absent; authenticated scan blocked by CAPTCHA, WAF challenge, lockout, or persistent 429s on protected routes. |
+| **Medium** | No passive scanning on PRs; no scheduled full scan; OpenAPI spec out of date; no triage workflow; no deduplication; ZAP action unpinned; missing GraphQL scanning; missing security header rules; missing request-shaping evidence for active scans; unknown lockout/reset behavior for the only DAST account. |
 | **Low** | Suboptimal scan duration settings; cosmetic report formatting; non-critical passive rules disabled. |
 
 ---
@@ -518,6 +575,10 @@ DAST tools report findings per-URL, producing hundreds of duplicate alerts for t
 | Passive scanning in CI | Yes/No | <workflow file> |
 | Active scanning (staging) | Yes/No | <workflow file> |
 | API scanning | Yes/No | <OpenAPI/GraphQL import> |
+| Authenticated coverage outcome | Full/Partial/Blocked/Not Evaluable | <routes or phase affected> |
+| Traffic shaping configured | Yes/No | <rate limit, thread count, delay> |
+| 429 / CAPTCHA / WAF block observed | Yes/No | <evidence and response pattern> |
+| Test account lockout/reset known | Yes/No/Unknown | <threshold and recovery path> |
 | Results deduplication | Yes/No | <dedup method> |
 
 ### Findings
@@ -582,7 +643,9 @@ DAST tools report findings per-URL, producing hundreds of duplicate alerts for t
 
 4. **Treating DAST findings as ground truth without validation.** DAST tools have significant false positive rates, especially for injection findings. Every high-severity DAST finding must be manually validated before filing a remediation ticket. Build validation into the triage workflow.
 
-5. **Running only scheduled weekly scans instead of integrating into CI.** Weekly scans create a feedback loop measured in days. Passive baseline scans in CI (on every PR) give developers immediate feedback on security header regressions and configuration issues, while weekly full scans provide comprehensive active testing coverage.
+5. **Counting login success as full authenticated coverage.** A scanner can authenticate once and still lose access later because of rate limiting, CAPTCHA, WAF/CDN bot mitigation, or account lockout. Record the affected phase and route class, then mark coverage partial or not evaluable until a slower scan profile or approved staging bypass proves otherwise.
+
+6. **Running only scheduled weekly scans instead of integrating into CI.** Weekly scans create a feedback loop measured in days. Passive baseline scans in CI (on every PR) give developers immediate feedback on security header regressions and configuration issues, while weekly full scans provide comprehensive active testing coverage.
 
 ---
 
@@ -606,6 +669,9 @@ This skill processes DAST configuration files that may contain target URLs, auth
 - ZAP Automation Framework: https://www.zaproxy.org/docs/automate/automation-framework/
 - ZAP GitHub Actions: https://www.zaproxy.org/docs/docker/github-actions/
 - ZAP Scan Rules: https://www.zaproxy.org/docs/alerts/
+- ZAP Rate Limit: https://www.zaproxy.org/docs/desktop/addons/network/options/ratelimit/
+- RFC 6585 -- 429 Too Many Requests: https://www.rfc-editor.org/rfc/rfc6585.html
+- OWASP WSTG -- Testing for Weak Lock Out Mechanism: https://owasp.org/www-project-web-security-testing-guide/stable/4-Web_Application_Security_Testing/04-Authentication_Testing/03-Testing_for_Weak_Lock_Out_Mechanism
 - OWASP API Security Top 10: https://owasp.org/API-Security/
 - Burp Suite Enterprise Documentation: https://portswigger.net/burp/enterprise
 - SARIF Specification: https://docs.oasis-open.org/sarif/sarif/v2.1.0/sarif-v2.1.0.html
@@ -614,4 +680,5 @@ This skill processes DAST configuration files that may contain target URLs, auth
 
 ## Changelog
 
+- **1.0.1** -- Added traffic-shaping, rate-limit, CAPTCHA, WAF block, and account-lockout evidence gates for authenticated DAST coverage.
 - **1.0.0** -- Initial release. Full coverage of DAST configuration review against OWASP Top 10:2021 and OWASP Testing Guide v4.2, with ZAP-specific patterns.
