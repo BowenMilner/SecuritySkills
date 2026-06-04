@@ -13,7 +13,7 @@ phase: [build, operate]
 frameworks: [OWASP-Secrets-Management, NIST-SP-800-57-Part1-Rev5]
 difficulty: intermediate
 time_estimate: "20-40min"
-version: "1.0.1"
+version: "1.0.2"
 author: unitoneai
 license: MIT
 allowed-tools: Read, Grep, Glob
@@ -352,13 +352,83 @@ spec:
 
 ---
 
+### Step 6: Runtime Diagnostic Artifact Review
+
+Source and CI scanning can be clean while secrets still leak through runtime diagnostics. Crash dumps, minidumps, support bundles, APM breadcrumbs, exception metadata, and debug uploads can capture process memory, environment variables, request headers, signed URLs, database connection strings, Kubernetes Secrets, or cloud credentials after deployment.
+
+#### 6.1 Diagnostic Artifact Discovery
+
+**Patterns to search:**
+
+```
+dump
+core
+coredump
+minidump
+crashpad
+breakpad
+diagnostic
+diagnostics
+support-bundle
+support_bundle
+debug bundle
+sentry
+breadcrumbs
+beforeSend
+before_breadcrumb
+datadog
+newrelic
+appdynamics
+rollbar
+bugsnag
+authorization
+cookie
+signed_url
+DATABASE_URL
+KUBERNETES_SERVICE_HOST
+```
+
+**Evidence to capture:**
+
+| Artifact source | Secret exposure risk | Required evidence |
+|-----------------|----------------------|-------------------|
+| Core dumps / coredumpctl | Process memory and environment variables | dump policy, storage path, permissions, retention, encryption, upload destination |
+| Minidumps / Crashpad / Breakpad | Memory pages, tokens, request context | scrubber configuration, symbol upload separation, access control, retention |
+| Support bundles | Kubernetes Secrets, pod env, config maps, headers | manifest of collected files, redaction allowlist/denylist, reviewer access scope |
+| APM / error reporting | Authorization headers, cookies, signed URLs, breadcrumbs | server-side scrubbing rules, client-side before-send filters, sample event proof |
+| CI or test diagnostics | Failed test env, service credentials, logs | log masking, artifact retention, access policy, expiration |
+
+#### 6.2 Review Rules
+
+- [ ] A configured dump or diagnostic path is not automatically a leak if artifacts are scrubbed, encrypted, access-controlled, short-lived, and stored in a restricted destination.
+- [ ] Flag crash/core/minidump uploads as **High** when they can include process memory or environment variables and are uploaded without redaction or restricted access.
+- [ ] Flag support bundles as **High** when they collect Kubernetes Secrets, pod environment variables, request headers, or database URLs without a documented scrubber.
+- [ ] Flag APM/error tools as **High** when they capture `Authorization`, `Cookie`, API keys, signed URLs, or connection strings in breadcrumbs, tags, spans, or exception metadata.
+- [ ] Treat encryption at rest as insufficient when broad support, vendor, or engineering groups can download raw artifacts.
+- [ ] Require retention and deletion evidence; diagnostic artifacts should have short TTLs unless a legal hold or incident record justifies longer storage.
+- [ ] Require sample-event proof that scrubbers remove sensitive fields before upload, not only after ingestion into a vendor UI.
+
+**Good managed diagnostic flow:**
+
+```text
+dump_path=/var/secure-dumps
+retention=24h
+encryption=KMS key limited to break-glass responders
+scrubber=redacts env vars, auth headers, cookies, signed URLs before upload
+destination=restricted incident bucket with object lock and audit logging
+```
+
+**Finding classification:** Diagnostic artifacts containing unsanitized credentials, tokens, cookies, signed URLs, or process environment secrets are **High**. Diagnostic artifacts with unclear retention, broad access, or no sample scrubber evidence are **Medium**. Managed encrypted short-lived artifacts with pre-upload redaction are not findings by themselves.
+
+---
+
 ## Findings Classification
 
 | Severity | Definition |
 |----------|-----------|
 | **Critical** | Committed secrets in current codebase or git history (unrotated); no secret detection tooling; .env with production credentials committed. |
-| **High** | No centralized secrets manager; no rotation automation; long-lived static credentials for agents; secrets in CI logs; no git history scanning; audit logging disabled on vault. |
-| **Medium** | Detection in CI only (no pre-commit); manual rotation process; excessive detection allowlists; token TTL mismatch; rotation not monitored; plaintext secrets in environment variables (vs. vault injection). |
+| **High** | No centralized secrets manager; no rotation automation; long-lived static credentials for agents; secrets in CI logs; no git history scanning; audit logging disabled on vault; diagnostic artifacts expose unsanitized credentials, tokens, cookies, signed URLs, or environment secrets. |
+| **Medium** | Detection in CI only (no pre-commit); manual rotation process; excessive detection allowlists; token TTL mismatch; rotation not monitored; plaintext secrets in environment variables (vs. vault injection); diagnostic artifacts lack retention, access-control, or scrubber proof. |
 | **Low** | Missing secret type documentation; secret naming convention inconsistencies; development-only secrets in non-.gitignored example files. |
 
 ---
@@ -388,6 +458,14 @@ spec:
 | DB credentials | Vault dynamic | On-demand | Yes | N/A (dynamic) |
 | API key (Stripe) | AWS SM | 90 days | Yes | 2024-01-15 |
 | TLS cert | cert-manager | 60 days | Yes | Auto |
+
+### Runtime Diagnostic Artifact Exposure
+
+| Artifact Source | Captures Secret-Adjacent Data | Redaction Before Upload | Retention | Access Control | Status |
+|-----------------|-------------------------------|-------------------------|-----------|----------------|--------|
+| coredumpctl | env + memory | Yes/No | 24h/unknown | restricted/broad | Pass/Gap |
+| Sentry | headers + breadcrumbs | Yes/No | 30d/unknown | project members | Pass/Gap |
+| support bundle | k8s env + configs | Yes/No | case-based | support group | Pass/Gap |
 
 ### Findings
 
@@ -442,6 +520,10 @@ spec:
 
 4. **Ignoring secret sprawl across multiple secrets managers.** Large organizations often have Vault, AWS Secrets Manager, Azure Key Vault, and application-specific secret stores running simultaneously. Without a unified inventory, secrets expire unmonitored and rotation gaps emerge. Maintain a single source of truth for secret metadata (type, owner, rotation schedule, storage location).
 
+5. **Assuming log redaction also protects crash dumps and support bundles.** Dumps and diagnostic bundles can capture memory, environment variables, request headers, or Kubernetes Secrets before ordinary logging filters run. Verify pre-upload redaction and artifact access separately.
+
+6. **Treating vendor-side scrubbing as enough.** If raw events reach a queue, collector, or SaaS vendor before scrubbing, the secret has already crossed a trust boundary. Prefer application-side or collector-side filtering before upload.
+
 ---
 
 ## Prompt Injection Safety Notice
@@ -466,10 +548,13 @@ This skill processes configuration files and code that may contain secret values
 - detect-secrets: https://github.com/Yelp/detect-secrets
 - HashiCorp Vault Documentation: https://developer.hashicorp.com/vault/docs
 - External Secrets Operator: https://external-secrets.io/
+- Sentry Sensitive Data Scrubbing: https://docs.sentry.io/security-legal-pii/scrubbing/
+- systemd-coredump: https://www.freedesktop.org/software/systemd/man/latest/systemd-coredump.html
 
 ---
 
 ## Changelog
 
+- **1.0.2** -- Added runtime diagnostic artifact gates for crash dumps, support bundles, APM/error tools, redaction, retention, access control, and upload destinations.
 - **1.0.1** -- Add false positive filtering guidance: distinguish real secrets from placeholders/examples, verify entropy, scope findings to actual secrets (not architectural gaps).
 - **1.0.0** -- Initial release. Full coverage of OWASP Secrets Management Cheat Sheet and NIST SP 800-57 Part 1 Rev 5 for secrets management review.
