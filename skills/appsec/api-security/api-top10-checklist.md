@@ -42,6 +42,40 @@ def get_order(order_id):
     return jsonify(order)
 ```
 
+Valid authorization does not have to be direct object ownership. Relationship-based authorization is acceptable when enforced before returning data:
+
+```python
+# SECURE: Tenant membership join authorizes access before data return
+@app.route('/api/v1/orders/<order_id>', methods=['GET'])
+@require_auth
+def get_order(order_id):
+    order = (
+        Order.query
+        .join(AccountMembership, AccountMembership.account_id == Order.account_id)
+        .filter(
+            Order.id == order_id,
+            AccountMembership.user_id == current_user.id,
+            AccountMembership.status == "active",
+        )
+        .one_or_none()
+    )
+    if order is None:
+        return jsonify({"error": "Not found"}), 404
+    return jsonify(OrderDTO.from_model(order).dict())
+```
+
+### Acceptable Authorization Evidence
+
+| Pattern | Evidence required |
+|---|---|
+| Direct ownership | Query or policy binds object owner to caller before data return. |
+| Tenant/team membership | Join or policy checks active membership in the object's tenant/account/project. |
+| ACL | ACL entry grants the caller or group the requested action on the object. |
+| Policy engine | Policy input includes subject, action, resource, tenant, and relevant attributes; decision is enforced before use. |
+| Capability grant/delegation | Grant has scope, subject, resource, action, expiry/revocation, and audit evidence. |
+
+Do not file BOLA solely because the code lacks `resource.user_id == current_user.id` when equivalent relationship, ACL, policy, or capability evidence is enforced at query/resolver time.
+
 ### GraphQL Vulnerable Patterns
 
 ```graphql
@@ -97,6 +131,8 @@ Both can coexist in a single endpoint. An endpoint may lack both a role check (B
 ### Review Checklist
 
 - [ ] Every endpoint that accepts a resource identifier enforces ownership or relationship-based access control.
+- [ ] Accepted relationship-based authorization patterns are backed by route, query, resolver, policy, or ACL evidence.
+- [ ] Negative tests prove cross-tenant, revoked-member, and unauthorized delegated-access attempts return 403/404 before data is returned.
 - [ ] Authorization checks happen at the data access layer, not only at the controller/route layer.
 - [ ] Batch/list endpoints filter results by the caller's permissions.
 - [ ] Resource identifiers are UUIDs or non-sequential values to resist enumeration.
@@ -273,6 +309,7 @@ app.use(express.json()); // Default limit may be very large or unconfigured
 - Enforce maximum pagination size (e.g., `limit` capped at 100). Default to a reasonable page size (e.g., 20).
 - Set maximum request body sizes (`express.json({ limit: '1mb' })`).
 - For GraphQL: enforce query depth limits (e.g., max depth 5), complexity analysis (weighted field costs), and batch query limits.
+- For GraphQL sensitive operations: count aliases, batched operations, persisted-query behavior, and operation names against cost/rate limits; HTTP request count alone is insufficient.
 - Set execution timeouts for database queries and downstream API calls.
 - Implement cost alerts and circuit breakers for operations that trigger billable third-party APIs.
 
@@ -282,6 +319,9 @@ app.use(express.json()); // Default limit may be very large or unconfigured
 - [ ] Pagination has a maximum page size enforced server-side.
 - [ ] Request body size limits are configured.
 - [ ] GraphQL queries have depth limits, complexity limits, and batch restrictions.
+- [ ] GraphQL alias counts and per-field/per-mutation costs are enforced for sensitive operations such as login, password reset, payment, invite, export, and admin changes.
+- [ ] Persisted queries and operation-name allowlists are verified when the API claims only approved GraphQL operations can run.
+- [ ] Negative tests prove alias-spray or batched sensitive mutations are blocked or counted per operation, not as one HTTP request.
 - [ ] Database queries and downstream calls have execution timeouts.
 - [ ] Billable operations have cost controls and alerting.
 
@@ -399,6 +439,28 @@ def register_webhook():
     return jsonify({"status": "registered"})
 ```
 
+### Webhook Authenticity and Replay Gates
+
+Inbound webhooks are API entry points even when they do not use user sessions. Review them under API2/API10, and review webhook registration URLs under API7.
+
+```javascript
+// VULNERABLE: accepts forged events before signature/replay checks
+app.post('/webhooks/stripe', express.json(), async (req, res) => {
+  await processPaymentEvent(req.body);
+  res.sendStatus(204);
+});
+```
+
+Required inbound webhook evidence:
+
+| Control | Evidence required |
+|---|---|
+| Raw-body signature verification | Handler verifies provider signature over the exact raw request body before trusting parsed event content. |
+| Timestamp/nonce tolerance | Stale events outside the tolerance window are rejected. |
+| Replay/idempotency | Event IDs or idempotency keys are stored so repeated events are safe and cannot double-apply effects. |
+| Event-source and type checks | Provider, tenant/account, event type, and destination route are validated before processing. |
+| Negative tests | Unsigned, tampered, stale, and replayed webhook requests are rejected before business logic executes. |
+
 ### Remediation Guidance
 
 - Validate and sanitize all user-supplied URLs. Use an allowlist of permitted schemes (`https` only), domains, or IP ranges.
@@ -415,6 +477,8 @@ def register_webhook():
 - [ ] HTTP redirects are disabled or the final destination is re-validated.
 - [ ] Cloud metadata endpoint access is restricted (IMDSv2 on AWS, equivalent on GCP/Azure).
 - [ ] Raw responses from fetched URLs are never returned directly to the client.
+- [ ] Webhook registration URLs are validated with the same SSRF controls as other outbound destinations.
+- [ ] Inbound webhook handlers verify signatures using raw request bodies and reject replayed/tampered events.
 
 ---
 
@@ -556,6 +620,7 @@ res.send(`<div class="bio">${data.biography}</div>`);  // Stored XSS via third p
 ### Review Checklist
 
 - [ ] Data from all upstream APIs is validated and sanitized before use in queries, rendering, or commands.
+- [ ] Inbound webhook event bodies are treated as untrusted until signature, timestamp, replay, source, and event type checks pass.
 - [ ] TLS certificate validation is enabled on all outbound API calls.
 - [ ] Response schemas from third-party APIs are validated before processing.
 - [ ] Outbound calls have timeouts, retry limits, and circuit breakers.
