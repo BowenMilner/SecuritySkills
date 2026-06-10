@@ -13,7 +13,7 @@ phase: [build, deploy, operate]
 frameworks: [CIS-Docker-v1.6.0, CIS-Kubernetes-v1.9.0, NIST-SP-800-190]
 difficulty: intermediate
 time_estimate: "30-60min"
-version: "1.0.0"
+version: "1.0.1"
 author: unitoneai
 license: MIT
 allowed-tools: Read, Grep, Glob
@@ -103,7 +103,27 @@ Use Glob to locate all relevant configuration files.
 **/*-podsecuritypolicy.yaml
 ```
 
+**Additional Kubernetes evidence patterns:**
+
+```
+automountServiceAccountToken
+serviceAccountName:
+ephemeralContainers:
+hostNetwork:
+hostPID:
+hostIPC:
+capabilities:
+verifyImages:
+validationFailureAction:
+cosign
+notary
+helm template
+kustomize build
+```
+
 Classify findings by type: Dockerfiles, Kubernetes manifests, Helm charts, Kustomize overlays, and supporting configs. Record all discovered files.
+
+For Helm or Kustomize inputs, record whether rendered manifests were reviewed. A template-only review is incomplete when environment values or overlays can alter security context, image tags/digests, namespace, RBAC, or admission policy behavior.
 
 ---
 
@@ -112,6 +132,36 @@ Classify findings by type: Dockerfiles, Kubernetes manifests, Helm charts, Kusto
 Evaluate all container and Kubernetes configurations against CIS Docker Benchmark v1.6.0, CIS Kubernetes Benchmark v1.9.0, and NIST SP 800-190 countermeasures. This covers Dockerfile security, Pod Security Standards, RBAC, Network Policies, Secrets Management, Control Plane configuration, and Container Runtime Hardening.
 
 For detailed CIS benchmark checklist items, NIST SP 800-190 countermeasure tables, and comprehensive security context evaluation criteria, see [cis-benchmarks.md](cis-benchmarks.md) in this skill directory.
+
+### Step 6A: System Workload Exceptions and Provenance Gates
+
+Before assigning Critical or High severity to host namespace, privileged, capability, or hostPath findings, decide whether the workload is an ordinary application workload or a platform/system workload exception.
+
+**System workload exception gate:**
+
+| Question | Evidence required |
+|---|---|
+| Is the workload in `kube-system` or a platform namespace? | Namespace, owner, and platform function. |
+| Is it a known infrastructure component? | CNI, CSI, kube-proxy, node exporter, log/EDR agent, admission controller, or cluster operator role. |
+| Are elevated settings necessary for the function? | Capability/host namespace rationale tied to documented operation. |
+| Is the exception governed? | Change ticket, owner, review date, and compensating controls. |
+| Is the exception denied for app namespaces? | Admission policy or Pod Security Admission evidence showing ordinary workloads cannot use the same settings. |
+
+Treat justified system workload exceptions as findings requiring governance/compensating-control evidence, not as identical to app workload violations. If the same settings appear in an application namespace, keep the original Critical/High severity.
+
+**Image provenance enforcement gate:**
+
+| Control | Evidence required |
+|---|---|
+| Immutable image identity | Digest pinning or equivalent immutable reference for reviewed workloads. |
+| Signature/provenance verification | Kyverno/Gatekeeper/admission webhook, policy mode, trusted issuers/subjects, and attestor scope. |
+| Enforcement mode | Admission policy is `Enforce`/deny, not audit-only, for the target namespace/workload set. |
+| Denial proof | Test or policy evidence that unsigned, mutable-tag, or untrusted-provenance images are rejected. |
+| Exception handling | Owner, scope, expiry/review date, and compensating controls for allowed exceptions. |
+
+Signing in CI is not enough by itself. Distinguish "image signed somewhere" from "cluster admission denies unsigned or untrusted images."
+
+**Ephemeral container gate:** Include `ephemeralContainers` in workload inventory and Pod Security Standards checks. A privileged debug container, host namespace use, or broad token mount in `ephemeralContainers` has the same security relevance as regular and init containers.
 
 ---
 
@@ -144,6 +194,8 @@ Produce the final report using the structure defined in the Output Format sectio
 - Date: <assessment date>
 - Frameworks: CIS Docker Benchmark v1.6.0, CIS Kubernetes Benchmark v1.9.0, NIST SP 800-190
 - Files reviewed: <N Dockerfiles, N K8s manifests, N Helm charts>
+- Rendered manifests reviewed: <yes/no/N/A; command and values/overlay set>
+- Template-only limitations: <none or describe>
 
 ### Executive Summary
 - Total checks evaluated: <N>
@@ -172,8 +224,14 @@ Produce the final report using the structure defined in the Output Format sectio
 - **Pod Security Standard Impact:** Violates Restricted / Violates Baseline / Compliant
 - **File:** <path>
 - **Line(s):** <line numbers>
-- **Resource:** <Deployment/StatefulSet name>
+- **Workload Kind:** <Pod/Deployment/StatefulSet/DaemonSet/Job/CronJob/other>
+- **Resource:** <resource name>
+- **Namespace:** <namespace>
 - **Container:** <container name>
+- **Container Type:** <container/initContainer/ephemeralContainer>
+- **System Workload Exception:** <yes/no/N/A; owner, rationale, review date>
+- **Image Provenance Evidence:** <digest/signature/admission policy/denial proof>
+- **Verification Performed:** <rendered manifest, admission deny test, policy review, Not Evaluable>
 - **Description:** <what was found>
 - **Evidence:** <specific configuration>
 - **Remediation:** <fix with code example>
@@ -184,6 +242,18 @@ Produce the final report using the structure defined in the Output Format sectio
 |----------|-----------|-----------|------------|
 | deploy/app | production | Baseline (not Restricted) | runAsRoot, no seccomp |
 | deploy/worker | production | Privileged | privileged: true |
+
+### System Workload Exceptions
+
+| Workload | Namespace | Elevated Setting | Rationale | Owner | Compensating Controls | Review Date | Status |
+|----------|-----------|------------------|-----------|-------|-----------------------|-------------|--------|
+| daemonset/cni | kube-system | hostNetwork, NET_ADMIN | CNI datapath | platform | RBAC scoped, signed image enforced | YYYY-MM-DD | Accepted/Needs evidence |
+
+### Image Provenance Enforcement
+
+| Workload/Namespace | Image Reference | Digest Pinned | Signature Policy | Enforcement Mode | Unsigned Image Denied | Status |
+|--------------------|-----------------|---------------|------------------|------------------|-----------------------|--------|
+| deploy/app | ghcr.io/org/app@sha256:... | yes | Kyverno verifyImages | Enforce | yes | Pass |
 
 ### Prioritized Remediation Plan
 
@@ -250,13 +320,15 @@ Produce the final report using the structure defined in the Output Format sectio
 
 ## Common Pitfalls
 
-1. **Init containers and sidecar containers are often missed.** Pod Security Standards apply to ALL containers in a pod, including init containers and ephemeral containers. Check every container spec.
-2. **Helm template values may override security settings.** A Helm chart template may set `runAsNonRoot: true`, but `values.yaml` or environment-specific values files may override it to `false`. Always check both the templates and all values files.
+1. **Init containers, sidecars, and ephemeral containers are often missed.** Pod Security Standards apply to ALL containers in a pod, including init containers and ephemeral debug containers. Check every container spec.
+2. **Helm template values may override security settings.** A Helm chart template may set `runAsNonRoot: true`, but `values.yaml` or environment-specific values files may override it to `false`. Render the selected release/values before assigning findings.
 3. **Default namespace is not just a naming issue.** The `default` namespace typically has no NetworkPolicy and no Pod Security Admission labels. Workloads in `default` often bypass all policy controls.
 4. **Base64 encoding is not encryption.** Kubernetes Secrets store data as base64, which is trivially decodable. Secrets committed to version control in manifests are effectively plaintext.
 5. **`readOnlyRootFilesystem` breaks many applications.** When recommending this control, also recommend adding writable `emptyDir` volume mounts for directories the application needs to write to (e.g., `/tmp`, `/var/cache`).
 6. **Network policies are additive, not subtractive.** A default-deny policy must be explicitly created. Without it, all pod-to-pod traffic is allowed regardless of other NetworkPolicy resources.
 7. **Distroless images have no shell.** While this is excellent for security, note that debugging requires ephemeral containers (`kubectl debug`). Flag this as a consideration, not a problem.
+8. **System workloads need exception governance, not blind pass/fail.** CNI, CSI, kube-proxy, and node agents may need host namespaces or capabilities. Require owner, rationale, RBAC scope, image provenance, change control, and proof that the exception is denied for ordinary app namespaces.
+9. **Image signing is not admission enforcement.** A CI job that signs images does not protect the cluster unless admission policy verifies signatures/provenance and denies unsigned or untrusted images.
 
 ---
 
@@ -288,9 +360,13 @@ Produce the final report using the structure defined in the Output Format sectio
 - Docker Security Best Practices: https://docs.docker.com/develop/security-best-practices/
 - Dockerfile Best Practices: https://docs.docker.com/develop/develop-images/dockerfile_best-practices/
 - NSA/CISA Kubernetes Hardening Guide: https://media.defense.gov/2022/Aug/29/2003066362/-1/-1/0/CTR_KUBERNETES_HARDENING_GUIDANCE_1.2_20220829.PDF
+- Kubernetes Ephemeral Containers: https://kubernetes.io/docs/concepts/workloads/pods/ephemeral-containers/
+- Sigstore Cosign: https://docs.sigstore.dev/cosign/overview/
+- Kyverno Verify Images: https://kyverno.io/docs/writing-policies/verify-images/
 
 ---
 
 ## Changelog
 
+- **1.0.1** -- Added system workload exception gates, image provenance admission evidence, rendered manifest scope, and ephemeral container inventory requirements.
 - **1.0.0** -- Initial release. Full coverage of CIS Docker Benchmark v1.6.0 Section 4-5, CIS Kubernetes Benchmark v1.9.0 Sections 1-5, and NIST SP 800-190 countermeasures across all five risk categories.
