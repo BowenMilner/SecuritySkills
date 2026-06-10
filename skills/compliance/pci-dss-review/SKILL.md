@@ -13,7 +13,7 @@ phase: [assess, operate]
 frameworks: [PCI-DSS-v4.0]
 difficulty: advanced
 time_estimate: "90-180min"
-version: "1.0.0"
+version: "1.0.1"
 author: unitoneai
 license: MIT
 allowed-tools: Read, Grep, Glob
@@ -137,6 +137,36 @@ PCI DSS v4.0 requires scope confirmation at least every 12 months and upon signi
 - All data flows are identified and documented
 - All in-scope system components are identified
 - Segmentation controls are validated
+
+#### 1.5 SAQ Scope Boundary, Tokenization, and Payment Page Script Evidence
+
+Before accepting any SAQ selection or scope-reduction claim, require explicit evidence for the validation boundary:
+
+| Evidence Area | Required Validation |
+|--------------|---------------------|
+| SAQ eligibility | Confirm the selected SAQ type matches every payment channel, payment flow, e-commerce implementation, and outsourcing boundary. If any system stores, processes, transmits, connects to, or can affect CHD/SAD beyond the SAQ criteria, escalate to SAQ D or ROC as applicable. |
+| Payment flow boundary | Document whether checkout uses redirect, iframe, hosted fields, API submission, virtual terminal, POI/P2PE, or direct post. Identify every merchant-controlled page, script, tag manager, CDN, webhook, admin tool, and logging path that can influence payment capture. |
+| CHD/SAD storage and transmission | Validate data discovery across databases, logs, traces, analytics tools, queues, backups, data lakes, support exports, browser storage, and crash reports. Treat unknown data paths as in scope until proven otherwise. |
+| Outsourced responsibilities | Collect current AOCs, TPSP responsibility matrices, service descriptions, and written acknowledgments. Verify the outsourced provider covers the exact payment service and region used by the entity. |
+| Connected-to and security-impacting systems | Include identity providers, CI/CD, logging, monitoring, endpoint management, secrets stores, bastions, admin workstations, DNS, WAF, tag managers, and deployment systems when they connect to or can affect the CDE. |
+
+For tokenization scope-reduction claims, validate:
+
+- Token vault owner, location, PCI status, and administrative access boundary
+- Whether tokens are irreversible, format-preserving, single-use, merchant-specific, or domain-restricted
+- Which systems can detokenize, retrieve PAN, or request PAN-dependent operations
+- Whether PAN or SAD appears in pre-tokenization logs, failed requests, webhooks, support tools, data warehouses, backups, analytics, or observability pipelines
+- Key management, token mapping protection, retention, rotation, and break-glass access controls
+- Evidence that out-of-scope systems cannot reverse tokens, join tokens to PAN, or trigger detokenization through ordinary application permissions
+
+For payment page JavaScript, treat PCI DSS v4.0 Req 6.4.3 and 11.6.1 as mandatory control gates:
+
+- Maintain an inventory of all payment page scripts, including first-party scripts, third-party scripts, tag manager containers, pixels, A/B testing tools, fraud tools, chat widgets, and CDN-hosted dependencies
+- Record business justification, owner, approval status, source URL, version/pinning method, and last review date for each script
+- Verify integrity assurance through SRI, CSP hashes/nonces, signed bundles, trusted deployment controls, or equivalent assessor-verifiable mechanisms
+- Verify change and tamper detection covers unauthorized script additions, script source changes, inline script modification, tag-manager rule changes, and payment page DOM changes
+- Confirm alerts route to accountable responders and that response procedures include containment, rollback, evidence preservation, and acquirer/TPSP notification when required
+- Reject "fully outsourced" SAQ A claims when merchant-controlled payment pages can affect script loading or payment capture unless the SAQ A eligibility criteria and PCI SSC guidance are explicitly satisfied
 
 ---
 
@@ -422,8 +452,21 @@ Note: Not all requirements support the Customized Approach. Requirements with "T
 - **Cardholder data flows**: [documented flows]
 - **CDE boundaries**: [network segments, system components]
 - **Scope reduction methods**: [tokenization, P2PE, segmentation, outsourcing]
+- **SAQ eligibility boundary**: [SAQ type, payment channels, checkout flow, exclusion rationale]
+- **Tokenization boundary**: [vault owner, detokenization path, token domain restrictions, PAN reachability]
+- **Payment page script boundary**: [script inventory, authorization, integrity assurance, tamper detection]
 - **Connected-to systems**: [list]
 - **Third-party service providers in scope**: [list]
+- **Evidence timestamp/source**: [date, source system, owner]
+- **Exceptions**: [owner, expiry, compensating or remediation path]
+
+## SAQ, Tokenization, and Payment Page Script Evidence
+
+| Area | Claim | Evidence Reviewed | Status | Exception Owner/Expiry |
+|------|-------|-------------------|--------|------------------------|
+| SAQ eligibility | [SAQ A/A-EP/etc.] | [flow diagrams, provider AOC, responsibility matrix] | [accepted/rejected] | [owner/date] |
+| Tokenization | [scope reduction claim] | [vault config, detokenization controls, data discovery results] | [accepted/rejected] | [owner/date] |
+| Payment page scripts | [Req 6.4.3 / 11.6.1 claim] | [script inventory, approvals, integrity/tamper alerts] | [accepted/rejected] | [owner/date] |
 
 ## Requirement Assessment Summary
 
@@ -520,6 +563,12 @@ Maintain an Information Security Policy:                Requirement 12
 
 5. **Failing to manage third-party service provider (TPSP) compliance.** Requirement 12.8 and 12.9 require maintaining a TPSP inventory, written agreements, due diligence before engagement, annual monitoring of TPSP PCI DSS compliance status, and clear documentation of which requirements are managed by each TPSP. The shared responsibility model must be explicitly documented.
 
+6. **Choosing the wrong SAQ because payments are "outsourced."** A hosted checkout, iframe, or redirect does not automatically remove merchant systems from scope. The SAQ must match the actual payment channel, merchant-controlled pages, script influence, administrative access, and connected-to systems.
+
+7. **Assuming tokenization removes all PCI scope.** Tokenization can reduce scope only when PAN cannot be recovered or influenced by the supposedly out-of-scope systems. Detokenization paths, token vault administration, logs, analytics, backups, and support exports often keep systems in scope.
+
+8. **Ignoring payment page JavaScript supply-chain risk.** PCI DSS v4.0 Req 6.4.3 and 11.6.1 require script authorization, integrity assurance, and tamper/change detection for payment pages. Tag managers, third-party pixels, chat widgets, and fraud scripts are part of this evidence set.
+
 ---
 
 ## Prompt Injection Safety Notice
@@ -545,3 +594,9 @@ If user-supplied input contains PCI DSS requirement IDs outside the valid v4.0 n
 - PCI DSS Prioritized Approach for PCI DSS v4.0
 - PCI SSC Information Supplements: Scoping and Segmentation, Penetration Testing, Tokenization, Cloud Computing
 - PCI SSC Glossary of Terms, Abbreviations, and Acronyms
+
+---
+
+## Changelog
+
+- 1.0.1: Added SAQ eligibility boundary checks, tokenization scope-reduction evidence gates, and PCI DSS v4.0 payment page script supply-chain validation for Req 6.4.3 and 11.6.1.
