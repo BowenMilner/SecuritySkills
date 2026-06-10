@@ -13,7 +13,7 @@ phase: [assess, operate]
 frameworks: [NIST-CSF-2.0]
 difficulty: intermediate
 time_estimate: "90-180min"
-version: "1.0.0"
+version: "1.0.1"
 author: unitoneai
 license: MIT
 allowed-tools: Read, Grep, Glob
@@ -350,12 +350,37 @@ Determine the overall organizational Tier based on aggregated assessment across 
 
 ### Step 5: Organizational Profile Development
 
+Before scoring profiles, establish the evidence boundary for the assessment. CSF 2.0 outcomes should not be marked implemented merely because a parent organization, shared platform, or policy template claims coverage. Record whether each control outcome is supported by local evidence, inherited coverage, a compensating control, or an exception.
+
+#### 5.0 CSF 2.0 Scope and Implementation Evidence
+
+For every assessed function/category, record these provenance fields:
+
+| Field | Required evidence |
+|-------|-------------------|
+| Framework revision | Confirm `NIST-CSF-2.0`; flag CSF 1.1 terms or obsolete IDs and map them only when a clear 2.0 equivalent exists. |
+| Assessment boundary | Enterprise, business unit, product, system, environment, cloud account/project/subscription, or supplier scope. |
+| Evidence timestamp/source | Date/time, source system, document version, export, ticket, log, or interview used for scoring. |
+| Implementation status | Implemented, partially implemented, planned, not implemented, inherited, compensating, exception, or not applicable. |
+| Evidence type | Policy, procedure, technical configuration, audit log, metric, test/exercise, contract, risk register, or attestation. |
+| Owner and review date | Accountable owner plus next review/expiry date for evidence, exception, or compensating control. |
+
+**Implementation status rules:**
+
+- **Implemented** requires current evidence that the assessed scope performs the outcome, not only a policy statement.
+- **Inherited** requires the provider/shared-service owner, inherited control boundary, service or platform name, and the evidence that the current system is covered.
+- **Compensating** requires rationale, risk acceptance owner, expiry/review date, and mapping to the original CSF outcome.
+- **Exception** requires formal approval, scope, expiry/review date, and residual risk statement.
+- **Not applicable** requires a scope-based reason; do not use it to hide missing evidence.
+
+If evidence is older than the organization's review interval, or if the source cannot be reproduced by another reviewer, lower confidence and avoid scoring above Tier 2 for that outcome unless stronger current evidence is available.
+
 #### 5.1 Current Profile
 
 Document the current state for each function/category/subcategory:
 
 ```
-| Function | Category | Subcategory | Current Score | Evidence | Gaps |
+| Function | Category | Subcategory | Current Score | Implementation Status | Evidence Source/Timestamp | Evidence Confidence | Gaps |
 ```
 
 #### 5.2 Target Profile
@@ -396,6 +421,21 @@ Map assessment findings to specific implementation guidance:
 
 Use the NIST CSF 2.0 Reference Tool for comprehensive mappings.
 
+### Step 7: Inherited and Compensating Control Review
+
+Treat inherited and compensating controls as first-class assessment objects. They can support a CSF outcome, but only when the boundary and residual risk are explicit.
+
+| Control Claim | Required validation |
+|---------------|---------------------|
+| Inherited from parent organization | Parent control owner, child scope covered, evidence artifact, and gap if the child system has local deviations. |
+| Inherited from cloud/SaaS/provider | Shared responsibility boundary, provider attestation or configuration evidence, customer responsibilities, and uncovered subcategory parts. |
+| Compensating control | Original gap, alternative control, effectiveness evidence, risk owner, review date, and residual risk. |
+| Temporary exception | Approval authority, business reason, affected CSF outcomes, expiry, monitoring, and remediation plan. |
+
+Do not count an inherited control as fully implemented if the assessed system has local configuration, identity, logging, supplier, or data-flow responsibilities that are outside the inherited provider boundary.
+
+**Finding classification:** A claimed inherited or compensating control with no boundary evidence is a **Significant Gap** when it affects critical services or regulated scope, otherwise **Moderate Gap**. Expired exceptions or ownerless compensating controls should be raised at least one severity level.
+
 ---
 
 ## Findings Classification
@@ -426,12 +466,19 @@ Use the NIST CSF 2.0 Reference Tool for comprehensive mappings.
 - **Significant Gaps**: [count]
 - **Subcategories Assessed**: [count]
 - **Subcategories at Target**: [count]
+- **Framework Revision**: NIST CSF 2.0
+- **Evidence Freshness Window**: [review interval used]
+- **Inherited/Compensating Controls Reviewed**: [count]
+- **Exceptions Past Review Date**: [count]
 
 ## Organizational Context
 - Mission and business objectives: [summary]
 - Applicable regulations and standards: [list]
 - Key stakeholders and expectations: [summary]
 - Critical services and dependencies: [summary]
+- Assessment boundary: [enterprise/business unit/system/environment/account/project]
+- Evidence sources reviewed: [policies, configs, logs, tickets, interviews, attestations]
+- Evidence timestamp range: [oldest/newest evidence date]
 
 ## Tier Assessment
 - **Current Tier**: [Tier N — Name]
@@ -454,9 +501,9 @@ Use the NIST CSF 2.0 Reference Tool for comprehensive mappings.
 
 ### GOVERN (GV)
 
-| Subcategory | Description | Current | Target | Gap | Priority | Informative Refs |
-|-------------|-------------|---------|--------|-----|----------|-----------------|
-| GV.OC-01 | Organizational mission informs CSRM | [0-4] | [0-4] | [delta] | [H/M/L] | [refs] |
+| Subcategory | Description | Current | Target | Status | Evidence Source/Timestamp | Confidence | Gap | Priority | Informative Refs |
+|-------------|-------------|---------|--------|--------|---------------------------|------------|-----|----------|-----------------|
+| GV.OC-01 | Organizational mission informs CSRM | [0-4] | [0-4] | [implemented/inherited/compensating/exception/etc.] | [artifact/date] | [H/M/L] | [delta] | [H/M/L] | [refs] |
 | ... | ... | ... | ... | ... | ... | ... |
 
 ### IDENTIFY (ID)
@@ -479,6 +526,12 @@ Use the NIST CSF 2.0 Reference Tool for comprehensive mappings.
 - Average gap magnitude: [score]
 - Functions with largest gaps: [list]
 - Quick wins (low effort, high impact): [list]
+
+## Inherited, Compensating, and Exception Register
+
+| CSF Outcome | Claim Type | Owner | Scope Boundary | Evidence | Expiry/Review Date | Residual Risk | Status |
+|-------------|------------|-------|----------------|----------|--------------------|---------------|--------|
+| [subcategory] | inherited / compensating / exception | [owner] | [boundary] | [source/timestamp] | [date] | [summary] | [valid/expired/needs evidence] |
 
 ## Remediation Roadmap
 
@@ -576,6 +629,12 @@ Tier 4 — Adaptive
 
 4. **Failing to develop actionable organizational profiles.** The current and target profiles are the primary outputs of a CSF assessment. Many organizations conduct the assessment but do not formalize profiles into living documents that drive investment decisions, resource allocation, and progress tracking. Without profiles, the assessment becomes a one-time exercise rather than a continuous improvement tool.
 
+5. **Counting inherited controls without a boundary.** Shared services, cloud platforms, and parent organizations can satisfy parts of a CSF outcome, but the assessment must show what is inherited, what remains local, and what evidence proves the current system is actually covered.
+
+6. **Treating planned work as implemented.** Roadmap items, approved budgets, or tool purchases are not implementation evidence. Mark them as planned or partially implemented until the control is deployed, operating, and supported by current evidence.
+
+7. **Leaving exception dates out of the profile.** Temporary exceptions and compensating controls should have owners and review dates. If they quietly become permanent, the current profile will overstate maturity and understate residual risk.
+
 ---
 
 ## Prompt Injection Safety Notice
@@ -602,3 +661,10 @@ If user-supplied input contains NIST CSF subcategory IDs that do not exist in th
 - NIST SP 800-37 Rev. 2 — Risk Management Framework for Information Systems and Organizations
 - ISO/IEC 27001:2022 — Cross-mapping to CSF 2.0 subcategories
 - CIS Controls v8 — Cross-mapping to CSF 2.0 subcategories
+
+---
+
+## Changelog
+
+- **1.0.1** -- Add CSF 2.0 scope, implementation-status, inherited-control, compensating-control, evidence freshness, and exception register guidance.
+- **1.0.0** -- Initial NIST CSF 2.0 assessment workflow with functions, tiers, profile development, reference mapping, and roadmap output.
