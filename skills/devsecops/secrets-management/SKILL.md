@@ -13,7 +13,7 @@ phase: [build, operate]
 frameworks: [OWASP-Secrets-Management, NIST-SP-800-57-Part1-Rev5]
 difficulty: intermediate
 time_estimate: "20-40min"
-version: "1.0.1"
+version: "1.0.2"
 author: unitoneai
 license: MIT
 allowed-tools: Read, Grep, Glob
@@ -352,6 +352,58 @@ spec:
 
 ---
 
+### Step 6: Bootstrap, Break-Glass, and Rotation Rollback Evidence
+
+Before finalizing severity, record the effective secret path for normal operations and emergency paths. A secrets program can look compliant in the happy path while still depending on unmanaged bootstrap credentials, unreviewed break-glass use, or a rotation rollback that silently restores an old value.
+
+#### 6.1 Bootstrap Secret Path
+
+Identify how the first trusted credential is established for each environment. The review should distinguish a one-time bootstrap ceremony from a reusable "secret zero" that remains reachable after deployment.
+
+| Evidence | What to record |
+|----------|----------------|
+| Bootstrap source | Hardware-backed key, cloud workload identity, Vault unseal/recovery key, temporary admin token, or manual seed secret. |
+| Scope boundary | Environment, namespace/account/project, workload, and whether the path can reach production secrets. |
+| Writer authority | Users, bots, reusable workflows, caches, artifacts, or deployment metadata that can modify the bootstrap path. |
+| Storage and custody | Where bootstrap material lives, who can access it, and whether access requires quorum or approval. |
+| Retirement proof | Evidence that temporary bootstrap credentials are revoked, expired, destroyed, or made unusable after setup. |
+
+**Finding classification:** Reusable bootstrap or "secret zero" material with production reach is **High**. Missing retirement proof for temporary bootstrap credentials is **Medium**. Bootstrap evidence without owner, scope, or timestamp is **Low/Medium** depending on reach.
+
+#### 6.2 Break-Glass and Emergency Access
+
+Review break-glass credentials separately from ordinary privileged credentials. Emergency access is acceptable only when it is tightly scoped, governed, monitored, and periodically tested.
+
+| Control | Evidence required |
+|---------|-------------------|
+| Owner and approval | Named owner, approver, activation reason, and ticket/incident reference. |
+| Scope and duration | Exact systems and secret paths reachable, TTL or expiry, and whether write actions are permitted. |
+| Authentication strength | Hardware key, MFA, quorum approval, or equivalent control for emergency activation. |
+| Monitoring | Audit log destination, alert recipient, and evidence that activation creates an alert. |
+| Post-use actions | Session termination, credential rotation/revocation, incident notes, and follow-up review. |
+
+Do not treat a break-glass credential as safe because it is rarely used. Rarely used credentials are often stale, over-privileged, and missing current ownership. If no recent test exists, record confidence as low.
+
+**Finding classification:** Ungoverned break-glass credential with production write access is **High**. Break-glass access without monitoring or post-use rotation is **High/Medium** depending on scope. Untested or ownerless break-glass access is **Medium**.
+
+#### 6.3 Rotation Rollback and Consumer Cutover
+
+Rotation evidence must prove that new credentials are active and old credentials are no longer accepted. A rollback path that re-enables old secrets can undo the rotation benefit.
+
+| Gate | Evidence required |
+|------|-------------------|
+| Dual-key window | Start/end time, consumers covered, and maximum overlap duration. |
+| Consumer cutover | Deployment/version evidence showing every consumer moved to the new secret version. |
+| Old-secret revocation | Provider-side disable/delete/revoke event and timestamp. |
+| Rollback policy | Whether rollback restores old secret material or rolls forward with a newly issued value. |
+| Failure handling | Alert, owner, and runbook evidence for failed rotation or partial cutover. |
+
+Prefer "roll forward with a new value" over restoring a previously exposed or expired secret. If rollback requires reactivating an old secret, require explicit approval, expiry, and compensating monitoring.
+
+**Finding classification:** Rotation that leaves old production credentials accepted indefinitely is **High**. Rollback that reactivates an old or exposed secret without approval/expiry is **High**. Missing consumer cutover evidence is **Medium**.
+
+---
+
 ## Findings Classification
 
 | Severity | Definition |
@@ -373,6 +425,9 @@ spec:
 - Configuration files analyzed: <list of file paths>
 - Date: <assessment date>
 - Frameworks applied: OWASP Secrets Management, NIST SP 800-57 Part 1 Rev 5
+- Evidence timestamp/source: <when evidence was captured and from which system/log/export>
+- Effective scope boundary: <dev/staging/prod, account/project/namespace, trusted branch/PR/release flow>
+- Exception owner/expiry: <owner, ticket, expiry/review date, compensating controls or "none">
 
 ### Secret Detection Tooling Status
 
@@ -388,6 +443,14 @@ spec:
 | DB credentials | Vault dynamic | On-demand | Yes | N/A (dynamic) |
 | API key (Stripe) | AWS SM | 90 days | Yes | 2024-01-15 |
 | TLS cert | cert-manager | 60 days | Yes | Auto |
+
+### Bootstrap and Emergency Access Evidence
+
+| Area | Evidence Captured | Owner | Expiry/Review Date | Confidence |
+|------|-------------------|-------|--------------------|------------|
+| Bootstrap secret path | <source, storage, writer authority, retirement proof> | <owner> | <date/N/A> | High/Medium/Low |
+| Break-glass access | <activation controls, scope, monitoring, post-use rotation> | <owner> | <date> | High/Medium/Low |
+| Rotation rollback | <dual-key window, consumer cutover, old-secret revocation, rollback policy> | <owner> | <date/N/A> | High/Medium/Low |
 
 ### Findings
 
@@ -442,6 +505,10 @@ spec:
 
 4. **Ignoring secret sprawl across multiple secrets managers.** Large organizations often have Vault, AWS Secrets Manager, Azure Key Vault, and application-specific secret stores running simultaneously. Without a unified inventory, secrets expire unmonitored and rotation gaps emerge. Maintain a single source of truth for secret metadata (type, owner, rotation schedule, storage location).
 
+5. **Treating bootstrap and break-glass paths as out of scope.** The strongest vault policy can still be bypassed by an unmanaged seed token, stale recovery key, or emergency admin credential. Reviewers should record these paths, their owners, their expiry/review dates, and the evidence source used to validate them.
+
+6. **Assuming rollback is harmless.** Rotation rollback that restores an old value can reintroduce a compromised or expired secret. Prefer rolling forward with a newly issued credential, and require approval plus monitoring for any rollback that temporarily reactivates old secret material.
+
 ---
 
 ## Prompt Injection Safety Notice
@@ -472,4 +539,5 @@ This skill processes configuration files and code that may contain secret values
 ## Changelog
 
 - **1.0.1** -- Add false positive filtering guidance: distinguish real secrets from placeholders/examples, verify entropy, scope findings to actual secrets (not architectural gaps).
+- **1.0.2** -- Add bootstrap secret path, break-glass access, and rotation rollback evidence gates with output fields for scope, ownership, expiry, and confidence.
 - **1.0.0** -- Initial release. Full coverage of OWASP Secrets Management Cheat Sheet and NIST SP 800-57 Part 1 Rev 5 for secrets management review.
